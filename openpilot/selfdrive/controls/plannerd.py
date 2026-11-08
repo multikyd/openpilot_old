@@ -8,6 +8,7 @@ from openpilot.common.realtime import Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
+from openpilot.selfdrive.controls.lib.overtake_plan import OvertakePlan, OvertakeInput
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 
 from openpilot.selfdrive.controls.lib.lateral_planner import LateralPlanner
@@ -46,6 +47,51 @@ def log_highway_overtake_candidate(sm, last_logged):
   return now
 
 
+def observe_overtake_plan(sm, plan, last_logged):
+  """Evaluate prerequisites only; this function cannot request any actuation."""
+  now = sm.logMonoTime['modelV2']*1e-9
+  cs, cc, nav = sm['carState'], sm['carControl'], sm['carrotMan']
+  md, lead = sm['modelV2'], sm['radarState'].leadOne
+  services = ('carState','carControl','carrotMan','radarState','modelV2')
+  fresh = sm.all_checks(services) and all(0. <= now-sm.logMonoTime[k]*1e-9 <= .3 for k in services)
+  near_route = nav.xTurnInfo >= 0 and 0. <= nav.xDistToTurn <= max(500.,20.*cs.vEgo)
+  override = (cs.gasPressed or cs.brakePressed or cs.steeringPressed or
+              cs.leftBlinkerStalk or cs.rightBlinkerStalk or (cs.leftBlinker and cs.rightBlinker))
+  # These are geometrical candidates, not a claim that an unverified white
+  # marking is legally crossable. Actuation prerequisites below remain false.
+  left_lane = (10 <= cs.leftLaneLine < 20 and md.meta.laneWidthLeft >= 2.8 and
+               len(md.laneLineProbs) >= 4 and md.laneLineProbs[0] >= .7)
+  right_lane = (10 <= cs.rightLaneLine < 20 and md.meta.laneWidthRight >= 2.8 and
+                len(md.laneLineProbs) >= 4 and md.laneLineProbs[3] >= .7)
+  x = OvertakeInput(
+    now=now, enabled=bool(cc.latActive and cc.longActive and cs.canValid),
+    highway=bool(nav.naviHighway), fresh=fresh, route_clear=not near_route,
+    driver_override=override, speed=float(cs.vEgo), set_speed=float(cs.vCruise)/3.6,
+    lead_id=int(lead.radarTrackId), lead_speed=float(lead.vLead), lead_distance=float(lead.dRel),
+    lead_reliable=bool(lead.present and lead.radar and lead.modelProb >= .9),
+    left_ready=bool(cs.leftOemLaneChangeReady), right_ready=bool(cs.rightOemLaneChangeReady),
+    left_lane_valid=left_lane, right_lane_valid=right_lane,
+    left_bsm=bool(cs.leftBlindspot), right_bsm=bool(cs.rightBlindspot),
+    left_lamp=bool(cs.leftBlinker), right_lamp=bool(cs.rightBlinker),
+    # Do not repurpose the 3-second high-speed manual blinker experiment.
+    signal_verified=False, signal_max_seconds=3.,
+    # Current side-lead messages cannot identify the original vehicle behind us.
+    rear_tracking_verified=False, rear_track_id=-1, change_completed=0)
+  result = plan.update(x)
+  candidate = (x.highway and x.speed >= 70./3.6 and x.lead_reliable and
+               x.lead_speed <= x.set_speed-10./3.6)
+  if candidate and now-last_logged >= 5.:
+    cloudlog.event('highway_overtake_plan', phase=result.phase, reason=result.reason,
+                   blocked_by=list(result.blocked_by), actuation_connected=False,
+                   left_green=x.left_ready, right_green=x.right_ready,
+                   left_geometry=left_lane, right_geometry=right_lane,
+                   left_bsm=x.left_bsm, right_bsm=x.right_bsm,
+                   original_lead=x.lead_id, lead_distance_m=x.lead_distance,
+                   speed_kph=x.speed*3.6, setting_kph=x.set_speed*3.6)
+    return now
+  return last_logged
+
+
 def main():
   # Keep planning off CPU5, which runs the higher-priority UI and display IRQs.
   # CPU4 control loops retain CTRL_HIGH priority and preempt this CTRL_LOW task.
@@ -68,6 +114,8 @@ def main():
   carrot = CarrotPlanner()
   observe_overtake = CP.carFingerprint == 'HYUNDAI_IONIQ_5_PE' and CP.openpilotLongitudinalControl
   last_overtake_log = -1.
+  overtake_plan = OvertakePlan()
+  last_overtake_plan_log = -1.
 
   while True:
     sm.update()
@@ -78,6 +126,7 @@ def main():
       longitudinal_planner.publish(sm, pm, carrot)
       if observe_overtake:
         last_overtake_log = log_highway_overtake_candidate(sm, last_overtake_log)
+        last_overtake_plan_log = observe_overtake_plan(sm, overtake_plan, last_overtake_plan_log)
 
       ldw.update(sm.frame, sm['modelV2'], sm['carState'], sm['carControl'])
       msg = messaging.new_message('driverAssistance')
