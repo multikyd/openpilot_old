@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import numpy as np
 
-from openpilot.selfdrive.controls.lib.model_lane_guard import ModelLaneGuard
+from openpilot.selfdrive.controls.lib.model_lane_guard import ModelLaneGuard, LanePositionGuard
 
 
 def fixture(side=1, offset=.65):
@@ -224,6 +224,16 @@ class TestModelLaneGuard(unittest.TestCase):
       self.assertGreater(g.evidence,0.)
       self.assertLess(g.accel*side,0.)
 
+  def test_recent_painted_boundary_can_bridge_moderate_std_increase(self):
+    model,cs,k=fixture();cs.rightLaneLine=11;g=ModelLaneGuard()
+    self.settle(g,model,cs,k)
+    model.laneLineProbs[2]=.6;model.laneLineStds[2]=.42
+    values=self.settle(g,model,cs,k,start=101.5,steps=10)
+    self.assertGreater(g.evidence,0.)
+    self.assertLess(values[-1],k)
+    fresh=ModelLaneGuard()
+    self.assertTrue(all(v==k for v in self.settle(fresh,model,cs,k,steps=10)))
+
   def test_weak_painted_line_cannot_acquire_without_recent_reliable_geometry(self):
     model,cs,k=fixture();cs.rightLaneLine=11;model.laneLineProbs[2]=.48
     self.assertTrue(all(v==k for v in self.settle(ModelLaneGuard(),model,cs,k)))
@@ -239,6 +249,125 @@ class TestModelLaneGuard(unittest.TestCase):
     model,cs,k=fixture(offset=0.);cs.rightLaneLine=11
     model.laneLines[1].y=model.position.y-1.275;model.laneLines[2].y=model.position.y+1.275
     self.assertTrue(all(v==k for v in self.settle(ModelLaneGuard(),model,cs,k)))
+
+
+class TestLanePositionGuard(unittest.TestCase):
+  def setUp(self):
+    self.md,self.cs,self.k=fixture(offset=.35)
+    self.md.meta.laneWidthLeft=1.
+    self.md.meta.laneWidthRight=3.2
+    self.md.laneLineProbs[0]=.05
+    self.h=LanePositionGuard()
+    self.t=10.
+
+  def tick(self,count=1,**kw):
+    out=[]
+    for _ in range(count):
+      self.t+=.05
+      args=dict(model=self.md,cs=self.cs,curvature=self.k,guarded=self.k,
+                stamp=self.t,now=self.t,preference=-.07,camera_offset=0.,actuator_delay=.4,enabled=True)
+      args.update(kw)
+      out.append(self.h.update(**args))
+    return out
+
+  def test_recovers_left_in_both_turn_directions_with_bounded_command(self):
+    for k in (.008,-.008):
+      self.setUp();self.k=k
+      outputs=self.tick(70)
+      self.assertLess(outputs[-1],k)
+      self.assertLessEqual(abs((outputs[-1]-k)*self.cs.vEgo**2),.300001)
+      self.assertTrue(all(v*k>0 for v in outputs))
+      self.assertLessEqual(max(abs(b-a)*self.cs.vEgo**2 for a,b in zip(outputs,outputs[1:])),.35*.05+1e-8)
+
+  def test_centered_car_at_left_preference_needs_no_extra_command(self):
+    self.setUp()
+    for line,offset in zip(self.md.laneLines,(-5.25,-1.75,1.75,5.25)):
+      line.y=self.md.position.y+offset+.07
+    self.assertTrue(all(v==self.k for v in self.tick(70)))
+
+  def test_reliable_left_can_continue_when_other_boundary_weakens(self):
+    self.tick(35);self.md.laneLineProbs[2]=.25;self.md.laneLineStds[2]=.5
+    self.assertLess(self.tick(20)[-1],self.k)
+
+  def test_right_reference_needs_recent_confirmed_lane_width(self):
+    self.md.laneLineProbs[1]=.2
+    self.assertTrue(all(v==self.k for v in self.tick(40)))
+    self.setUp();self.tick(30);self.md.laneLineProbs[1]=.2
+    self.assertLess(self.tick(15)[-1],self.k)
+    self.tick(180)
+    self.assertAlmostEqual(self.h.accel,0.,places=5)
+
+  def test_weak_data_cannot_build_and_extended_loss_releases(self):
+    self.tick(25);before=self.h.accel
+    self.md.laneLineProbs[1]=self.md.laneLineProbs[2]=.2
+    self.tick(5)
+    self.assertGreaterEqual(self.h.accel,before-1e-9)
+    self.tick(160)
+    self.assertAlmostEqual(self.h.accel,0.,places=6)
+
+  def test_blinkers_driver_override_stale_model_and_disable_clear(self):
+    for key in ('leftBlinker','rightBlinker','steeringPressed'):
+      self.setUp();self.tick(30);setattr(self.cs,key,True)
+      self.assertEqual(self.tick(),[self.k])
+    self.setUp();self.tick(30)
+    self.assertEqual(self.tick(now=self.t+1.),[self.k])
+    self.setUp();self.tick(30);self.assertEqual(self.tick(enabled=False),[self.k])
+
+  def test_clear_rightmost_context_retains_existing_profile(self):
+    self.tick(30)
+    self.md.meta.laneWidthRight=.8;self.md.meta.laneWidthLeft=3.2
+    self.md.laneLineProbs[0]=.8;self.md.laneLineProbs[3]=.05
+    self.assertEqual(self.tick(),[self.k])
+
+  def test_single_lane_with_yellow_centerline_retains_opposing_traffic_margin(self):
+    self.tick(30)
+    self.md.meta.laneWidthLeft=.7;self.md.meta.laneWidthRight=.7
+    self.md.laneLineProbs[0]=self.md.laneLineProbs[3]=.05
+    self.cs.leftLaneLine=21
+    self.assertEqual(self.tick(),[self.k])
+
+  def test_zero_preference_and_lane_change_are_disabled(self):
+    self.assertEqual(self.tick(30,preference=0.),[self.k]*30)
+    self.md.meta.laneChangeState='laneChangeStarting'
+    self.assertEqual(self.tick(30),[self.k]*30)
+
+  def test_existing_boundary_correction_is_not_added_twice(self):
+    self.tick(70)
+    stronger=self.k-.0015
+    self.assertEqual(self.tick(guarded=stronger)[0],stronger)
+    protect_left=self.k+.001
+    self.assertEqual(self.tick(guarded=protect_left)[0],protect_left)
+
+  def test_duplicate_model_timestamp_cannot_integrate_again(self):
+    self.tick(35);before=self.h.accel
+    for _ in range(100):
+      self.h.update(self.md,self.cs,self.k,self.k,self.t,self.t,
+                    preference=-.07,camera_offset=0.)
+    self.assertEqual(self.h.accel,before)
+
+  def test_bad_geometry_and_missing_preference_cannot_keep_command(self):
+    self.tick(30);self.md.laneLines[1].y[0]=math.nan
+    self.assertEqual(self.tick(),[self.k])
+    self.assertEqual(self.h.accel,0.)
+    self.setUp();self.assertEqual(self.tick(preference=None),[self.k])
+
+  def test_lane_callback_is_applied_before_filter_without_accumulation(self):
+    import ast
+    from pathlib import Path
+    tree=ast.parse((Path(__file__).parents[1]/'controlsd.py').read_text(encoding='utf8'))
+    f=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='lane_curve_command')
+    env=dict(np=np,DT_CTRL=.01,get_lag_adjusted_curvature=lambda *args:.008)
+    exec(compile(ast.Module(body=[f],type_ignores=[]),'actual_lane_command','exec'),env)
+    fn=env['lane_curve_command'];previous=.008
+    calls=[]
+    def adjust(k):
+      calls.append(k)
+      return k-.0005
+    for _ in range(500):
+      previous,_=fn(None,17.,[],[],[],.4,.1,previous,False,curvature_adjust=adjust)
+    self.assertAlmostEqual(previous,.0075,places=8)
+    self.assertEqual(len(calls),500)
+    self.assertTrue(all(k==.008 for k in calls))
 
 
 if __name__ == '__main__':

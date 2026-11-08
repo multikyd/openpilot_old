@@ -16,7 +16,7 @@ class CongestionFollow:
     self.lead_time = 0.
     self.strength = 0.
 
-  def update(self, lead, speed, normal_accel, t_follow, enabled, dt):
+  def update(self, lead, speed, normal_accel, t_follow, enabled, dt, highway=False):
     if not enabled or not all(math.isfinite(x) for x in (speed, normal_accel, t_follow, dt)) or not 0. < dt <= .25:
       self.reset()
       return t_follow, normal_accel
@@ -35,8 +35,11 @@ class CongestionFollow:
       self.missing_time += dt
 
     trusted = reliable and self.lead_time >= .8
-    self.low_time = self.low_time+dt if trusted and speed < 1.2 and lead.vLead < 1.2 else 0.
-    self.move_time = self.move_time+dt if trusted and speed > 1.5 and lead.vLead > 1.5 else 0.
+    # Highway queues can creep through a wave without coming to a full stop.
+    # Separate low/moving thresholds prevent small speed fluctuations counting twice.
+    low_speed, moving_speed = (2., 3.) if highway else (1.2, 1.5)
+    self.low_time = self.low_time+dt if trusted and speed < low_speed and lead.vLead < low_speed else 0.
+    self.move_time = self.move_time+dt if trusted and speed > moving_speed and lead.vLead > moving_speed else 0.
     if self.move_time >= 2.:
       self.ready = True
     if self.ready and self.low_time >= 1.:
@@ -50,5 +53,6 @@ class CongestionFollow:
     self.strength += max(-dt/4., min(dt/2., target-self.strength))
     weight = self.strength * max(0., min(1., (10.-speed)/2.)) if trusted else 0.
     extra_follow = .25 * weight * max(0., min(1., speed/2.))
-    accel_cap = .75 + .35 * max(0., min(1., speed/8.))
+    speed_weight = max(0., min(1., speed/8.))
+    accel_cap = (.5 + .25*speed_weight) if highway else (.75 + .35*speed_weight)
     return t_follow+extra_follow, min(normal_accel, normal_accel+weight*(accel_cap-normal_accel))

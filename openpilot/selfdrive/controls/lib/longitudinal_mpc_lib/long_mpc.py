@@ -609,7 +609,7 @@ class LongitudinalMpc:
 
   def update(self, carrot, reset_state, radarstate, v_cruise, x, v, a, j, personality=log.LongitudinalPersonality.standard,
              prev_accel_constraint=True, future_curvature=None, allow_turn_resume=False, allow_congestion=False, cutin_accel_limit=None,
-             turn_exit_strength=0., allow_stop_approach=False, radar_stamp=0., observation_time=0.):
+             turn_exit_strength=0., allow_stop_approach=False, radar_stamp=0., observation_time=0., highway_queue=False):
     v_ego = self.x0[1]
     a_ego = self.x0[2]
     t_follow = carrot.get_T_FOLLOW(personality, v_ego, a_ego)
@@ -640,7 +640,7 @@ class LongitudinalMpc:
     jam_follow, jam_accel = self.congestion_follow.update(
       radarstate.leadOne, v_ego, self.max_a, t_follow,
       allow_congestion and mode == 'acc' and carrot.desireState <= .1 and
-      carrot.xState not in [XState.e2eStop, XState.e2eStopped], self.dt)
+      carrot.xState not in [XState.e2eStop, XState.e2eStopped], self.dt, highway=highway_queue)
     if not reset_state:
       t_follow = jam_follow
 
@@ -757,7 +757,10 @@ class LongitudinalMpc:
       enabled=(allow_stop_approach and mode == 'acc' and not reset_state and
                carrot.xState not in [XState.e2eStop, XState.e2eStopped, XState.e2ePrepare] and
                carrot.signal_follow.strength <= 0. and
-               self.turn_loss_limit is None and cutin_accel_limit is None and jam_accel >= self.max_a-1e-6))
+               self.turn_loss_limit is None and cutin_accel_limit is None and
+               # A queue acceleration cap must not block easing behind a moving
+               # lead; retain the queue's original stopped-lead distance goal.
+               (jam_accel >= self.max_a-1e-6 or radarstate.leadOne.vLead > 1.5)))
     self.yref[:,0] = 0.
     if approach_bias != 0.:
       self.yref[:,0] = stop_approach_reference(

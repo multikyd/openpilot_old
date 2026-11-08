@@ -5,6 +5,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.common.params import Params
+from openpilot.selfdrive.controls.lib.stop_approach import TerminalStopRelease
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
@@ -59,6 +60,7 @@ class LongControl:
                              (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
                              rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
+    self.terminal_stop_release = TerminalStopRelease()
 
 
     self.params = Params()
@@ -75,7 +77,7 @@ class LongControl:
   def reset(self):
     self.pid.reset()
 
-  def update(self, active, CS, long_plan, accel_limits, t_since_plan, radarState):
+  def update(self, active, CS, long_plan, accel_limits, t_since_plan, radarState, radar_stamp=0., observation_time=0., terminal_stop_ready=False):
 
     soft_hold_active = CS.softHoldActive > 0
     a_target_ff = long_plan.aTarget
@@ -155,5 +157,14 @@ class LongControl:
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target_ff)
 
+    output_accel = self.terminal_stop_release.update(
+      lead, radarState.leadTwo, CS.vEgo, output_accel, self.last_output_accel,
+      radar_stamp, observation_time,
+      enabled=(terminal_stop_ready and active and self.CP.brand == "hyundai" and
+               self.long_control_state == LongCtrlState.pid and not soft_hold_active and
+               not long_plan.fcw and long_plan.xState == 0 and
+               str(long_plan.longitudinalPlanSource) == 'lead0' and
+               not (CS.gasPressed or CS.brakePressed or CS.steeringPressed or CS.leftBlinker or CS.rightBlinker)),
+      dt=DT_CTRL)
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel, a_target_ff, j_target_now

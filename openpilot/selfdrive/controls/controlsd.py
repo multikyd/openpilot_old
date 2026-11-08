@@ -16,7 +16,7 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
-from openpilot.selfdrive.controls.lib.model_lane_guard import ModelLaneGuard
+from openpilot.selfdrive.controls.lib.model_lane_guard import ModelLaneGuard, LanePositionGuard
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
@@ -35,7 +35,7 @@ ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 
 def lane_curve_command(CP, v_ego, psis, curvatures, distances, actuator_delay,
-                       smoothing_seconds, previous_curvature, steering_pressed):
+                       smoothing_seconds, previous_curvature, steering_pressed, curvature_adjust=None):
   # Preview compensation must use the same smoothing time as the final filter.
   curvature = get_lag_adjusted_curvature(CP, v_ego, psis, curvatures,
                                         actuator_delay + smoothing_seconds, distances)
@@ -48,6 +48,8 @@ def lane_curve_command(CP, v_ego, psis, curvatures, distances, actuator_delay,
     tau -= turn * entry * (smoothing_seconds - 0.15)
     curvature = get_lag_adjusted_curvature(CP, v_ego, psis, curvatures,
                                           actuator_delay + tau, distances)
+  if curvature_adjust is not None:
+    curvature = curvature_adjust(curvature)
   alpha = 1 - np.exp(-DT_CTRL / tau) if tau > 0 else 1.0
   return float(alpha * curvature + (1 - alpha) * previous_curvature), tau
 
@@ -71,6 +73,8 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.model_lane_guard = ModelLaneGuard()
+    self.lane_position_guard = LanePositionGuard()
+    self.lane_center_preference = self.params.get("LaneCenterOffset", return_default=True)
     self.camera_offset = self.params.get("CameraOffsetAdj", return_default=True)
 
     self.pose_calibrator = PoseCalibrator()
@@ -120,6 +124,7 @@ class Controls:
         self.lat_smooth_seconds = LAT_SMOOTH_SECONDS
       self.steer_actuator_delay = self.params.get("SteerActuatorDelay")
       self.camera_offset = self.params.get("CameraOffsetAdj", return_default=True)
+      self.lane_center_preference = self.params.get("LaneCenterOffset", return_default=True)
 
     CS = self.sm['carState']
 
@@ -181,7 +186,13 @@ class Controls:
     t_since_plan = (self.sm.frame - self.sm.recv_frame['longitudinalPlan']) * DT_CTRL
     if self.sm.valid['longitudinalPlan'] and 0 <= t_since_plan < 0.3 and not long_plan.allowThrottle:
       pid_accel_limits = (pid_accel_limits[0], min(pid_accel_limits[1], 0.0))
-    accel, aTarget, jerk = self.LoC.update(CC.longActive, CS, long_plan, pid_accel_limits, t_since_plan, self.sm['radarState'])
+    stop_observation_time = time.monotonic()
+    accel, aTarget, jerk = self.LoC.update(
+      CC.longActive, CS, long_plan, pid_accel_limits, t_since_plan, self.sm['radarState'],
+      radar_stamp=self.sm.logMonoTime['radarState']*1e-9, observation_time=stop_observation_time,
+      terminal_stop_ready=(0. <= t_since_plan < .15 and
+                           self.sm.all_checks(['carState', 'radarState', 'longitudinalPlan']) and
+                           0. <= stop_observation_time-self.sm.logMonoTime['carState']*1e-9 <= .1))
     actuators.accel = float(accel)
     actuators.aTarget = float(aTarget)
     actuators.jerk = float(jerk)
@@ -221,6 +232,17 @@ class Controls:
 
     effective_lat_smoothing = self.lat_smooth_seconds
     model_lane_guard_used = False
+    position_guard_used = False
+    position_now = time.monotonic()
+    def position_curvature(curvature, guarded=None):
+      return self.lane_position_guard.update(
+        model_v2, CS, curvature, curvature if guarded is None else guarded,
+        self.sm.logMonoTime['modelV2']*1e-9, position_now,
+        preference=self.lane_center_preference, camera_offset=self.camera_offset,
+        actuator_delay=steer_actuator_delay,
+        enabled=(self.sm.all_checks(['modelV2','carState']) and
+                 0. <= position_now-self.sm.logMonoTime['carState']*1e-9 <= .1))
+
     if not CC.latActive:
       new_desired_curvature = self.curvature
     elif self.sm.valid['lateralManeuverPlan']:
@@ -229,9 +251,11 @@ class Controls:
       if len(lat_plan.curvatures) == 0:
         new_desired_curvature = self.curvature
       else:
+        position_guard_used = True
         new_desired_curvature, effective_lat_smoothing = lane_curve_command(
           self.CP, CS.vEgo, lat_plan.psis, lat_plan.curvatures, lat_plan.distances,
-          steer_actuator_delay, self.lat_smooth_seconds, self.desired_curvature, CS.steeringPressed)
+          steer_actuator_delay, self.lat_smooth_seconds, self.desired_curvature, CS.steeringPressed,
+          curvature_adjust=position_curvature)
     else:
       # Constrain the model action before smoothing; adding a correction after
       # this filter would feed it back as a new baseline every control tick.
@@ -243,6 +267,8 @@ class Controls:
         enabled=(self.sm.all_checks(['modelV2', 'carState']) and
                  0. <= guard_now-self.sm.logMonoTime['carState'] * 1e-9 <= .1),
         camera_offset=self.camera_offset, actuator_delay=steer_actuator_delay)
+      position_guard_used = True
+      guarded_curvature = position_curvature(model_v2.action.desiredCurvature, guarded_curvature)
       # Reduce filter lag only once the model has started the requested maneuver.
       meta = model_v2.meta
       right_entry = (meta.laneChangeDirection == LaneChangeDirection.right and
@@ -259,6 +285,8 @@ class Controls:
       new_desired_curvature = smooth_value(guarded_curvature, self.desired_curvature,
                                             0.06 if lane_change_entry else 0.1)
 
+    if not position_guard_used:
+      self.lane_position_guard.reset()
     if not model_lane_guard_used:
       self.model_lane_guard.reset()
 
@@ -392,6 +420,8 @@ class Controls:
     CC.driverMonitoringEscalation = cs.forceDecel
 
     cs.debugMsg1 = str(CO.actuatorsOutput.kisaLog1)
+    if abs(self.lane_position_guard.accel) > 1e-4:
+      cs.debugMsg1 += f" LPG={self.lane_position_guard.accel:+.2f}"
     if abs(self.model_lane_guard.accel) > 1e-4:
       cs.debugMsg1 += f" MLG={self.model_lane_guard.side:+d}:{self.model_lane_guard.accel:+.2f}"
     #cs.debugMsg2 = str(CO.actuatorsOutput.kisaLog2)

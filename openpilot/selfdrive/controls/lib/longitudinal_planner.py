@@ -287,6 +287,8 @@ class LongitudinalPlanner:
                     turn_exit_strength=self.turn_exit_recovery.strength,
                     # Use measured speed for headroom: filtered MPC speed lags after slowing.
                     allow_turn_resume=(v_cruise > v_ego+.05 and sm.all_checks(['modelV2', 'carState'])),
+                    highway_queue=(sm['carrotMan'].naviHighway and sm.all_checks(['carrotMan']) and
+                                   0. <= now-sm.logMonoTime['carrotMan']*1e-9 <= 1.),
                     allow_congestion=(sm['selfdriveState'].enabled and
                                       sm['controlsState'].longControlState != LongCtrlState.off and
                                       not sm['carState'].gasPressed and not sm['carState'].brakePressed and

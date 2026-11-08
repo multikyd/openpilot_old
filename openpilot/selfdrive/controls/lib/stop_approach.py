@@ -69,13 +69,17 @@ class StopApproach:
     matched_low_speed = (self.confirm >= .5 and self.brake_age <= 4. and 1.2 < speed <= 3. and
                          lead.vLead > 1. and -.25 <= lead.vRel <= .35 and -1.2 < lead.aLeadK < .3 and
                          accel < -.1 and lead.dRel >= max(desired_distance-.35, 2.5+speed*.65))
-    self.easing_confirm = self.easing_confirm+dt if easing or matched_low_speed else 0.
+    close_queue_easing = (self.confirm >= 2. and self.brake_age <= 4. and 1.2 < speed <= 4. and
+                          lead.vLead > 1.5 and -.65 <= lead.vRel <= 1.5 and
+                          -.8 < lead.aLeadK < .3 and accel < -.1 and
+                          lead.dRel >= max(4.5, 2.0 + speed*.7, desired_distance-2.0))
+    self.easing_confirm = self.easing_confirm+dt if easing or matched_low_speed or close_queue_easing else 0.
     target = min(.8, .15*speed) if self.easing_confirm >= .3 else 0.
     # Strong/renewed braking, closing or short room returns to the original goal.
-    if not matched_low_speed and (lead.aLeadK <= -.9 or lead.vRel <= -1.8 or lead.dRel < desired_distance):
+    if not (matched_low_speed or close_queue_easing) and (lead.aLeadK <= -.9 or lead.vRel <= -1.8 or lead.dRel < desired_distance):
       self.bias = 0.
     else:
-      rate = (.8 if matched_low_speed else .35) if target > self.bias else .8
+      rate = (.8 if matched_low_speed or close_queue_easing else .35) if target > self.bias else .8
       self.bias += max(-rate*dt, min(rate*dt, target-self.bias))
     if not 1.2 < speed < 30./3.6 or lead.vLead <= .5:
       self.bias = 0.
@@ -102,3 +106,57 @@ def stop_approach_reference(bias, speed_plan, lead_speed_plan, lead_obstacle, ot
     stopped = np.clip((.5-lead_speed)/.2, 0., 1.)
     return bias*stopped*clear*(lead_x <= cruise_x)/(np.maximum(0., speed)+10.)
   return -min(.8, bias)*moving*clear/(np.maximum(0., speed)+10.)
+
+
+class TerminalStopRelease:
+  """Ease negative feedforward only in the final crawl behind a confirmed lead."""
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.identity = self.stamp = None
+    self.distance = self.relative = self.confirm = 0.
+
+  @staticmethod
+  def same_target(lead, other):
+    # Radar and vision may publish the same close car twice. A different radar
+    # identity is always independent; a vision duplicate must overlap tightly.
+    if StopApproach.same_lead(lead, other):
+      return True
+    values = (other.dRel, other.vRel, other.dPath)
+    return (other.present and not other.radar and other.radarTrackId < 0 and
+            all(math.isfinite(x) for x in values) and
+            abs(other.dRel-lead.dRel) < .75 and
+            abs(other.vRel-lead.vRel) < .35 and abs(other.dPath-lead.dPath) < .2)
+
+  def update(self, lead, other, speed, command, previous, stamp, now, enabled, dt):
+    values = (speed, command, previous, stamp, now, dt, lead.dRel, lead.vRel,
+              lead.vLead, lead.modelProb, lead.dPath)
+    if (not enabled or not all(math.isfinite(x) for x in values) or
+        not 0. < dt <= .05 or not 0. <= now-stamp <= .2 or
+        not lead.present or not lead.radar or lead.radarTrackId < 0 or
+        lead.modelProb < .95 or abs(lead.dPath) > .7 or not 0. <= speed < 15. or
+        not 2. < lead.dRel < 60. or abs(lead.vLead-speed-lead.vRel) > 1. or
+        (other.present and not self.same_target(lead, other) and
+         (not math.isfinite(other.dRel) or other.dRel < lead.dRel+5.))):
+      self.reset()
+      return command
+    if self.stamp != stamp:
+      elapsed = stamp-self.stamp if self.stamp is not None else 0.
+      continuous = (self.identity == lead.radarTrackId and .01 <= elapsed <= .2 and
+                    abs(lead.dRel-self.distance-.5*(lead.vRel+self.relative)*elapsed) < .5)
+      self.confirm = self.confirm+elapsed if continuous else 0.
+      self.identity, self.stamp = lead.radarTrackId, stamp
+      self.distance, self.relative = lead.dRel, lead.vRel
+    # Preserve stronger braking and do not manufacture positive acceleration.
+    if (self.confirm < .5 or not 0. <= speed <= 1.5 or abs(lead.vLead) >= .5 or
+        not 2.5 <= lead.dRel <= 4.5 or not -2. < command < -.5):
+      return command
+    closing = max(speed, -lead.vRel, 0.)
+    # Include actuator travel before evaluating room above a 2 m reserve.
+    room = lead.dRel-2.-.3*closing
+    required = closing**2/(2.*max(.01, room))
+    if room <= 0. or required > .9:
+      return command
+    floor = -max(.5, 1.3*required)
+    return max(command, min(floor, previous+1.5*dt))
