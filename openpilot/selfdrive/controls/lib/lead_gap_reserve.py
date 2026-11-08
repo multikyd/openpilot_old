@@ -193,8 +193,12 @@ class NormalStopGap:
     # Use the extra space only if gentle braking can still reach a shorter gap.
     # Keep the chosen gap for this stop so slowing down cannot move the goal back.
     available = lead.dRel - .25 * speed
-    if .25 < speed <= 2.5 and -.9 <= planned < 0. and lead.vRel < -.15:
-      comfortable_gap = available - speed * speed / (2. * .9)
+    if .25 < speed <= 2.5 and -2.5 <= planned < 0. and lead.vRel < -.15:
+      # Do not demand extra braking solely to keep 2.5 m when the original
+      # plan can stop within the allowed shorter gap. Bound this calculation;
+      # genuinely stronger emergency braking still takes priority downstream.
+      approach_decel = max(.9, min(1.8, -planned))
+      comfortable_gap = available - speed * speed / (2. * approach_decel)
       if 1.8 <= comfortable_gap < self.target_gap:
         self.target_gap = 2.0 if comfortable_gap >= 2.0 else 1.8
     room = max(.3, available - self.target_gap)
@@ -204,5 +208,9 @@ class NormalStopGap:
       self.stopping=True
     if self.cap is None:
       self.cap=min(0.,planned)
-    self.cap+=max(-.8*dt,min(.8*dt,target-self.cap))
+    # Hand back unnecessary extra braking smoothly once the shorter target
+    # fits the original plan; never weaken the original MPC command itself.
+    release_rate = 1.5 if self.target_gap < 2.5 and target >= planned else .8
+    rate = .8 if target < self.cap else release_rate
+    self.cap+=max(-rate*dt,min(rate*dt,target-self.cap))
     return self.cap

@@ -271,7 +271,7 @@ class TestNormalStopGap(unittest.TestCase):
     self.assertFalse(self.h.stopping)
   def test_shorter_target_only_when_comfortable_and_confirmed(self):
     for distance, planned, expected in ((4., -.5, 2.5), (3.5, -.5, 2.), (3.2, -.5, 1.8),
-                                        (3., -.5, 2.5), (3.2, -1.2, 2.5)):
+                                        (3., -.5, 2.5), (3.2, -1.2, 2.)):
       with self.subTest(distance=distance, planned=planned):
         self.setUp()
         for _ in range(20):
@@ -286,6 +286,23 @@ class TestNormalStopGap(unittest.TestCase):
         self.lead.vLead = 1.
         self.tick(speed=1.3)
         self.assertEqual(self.h.target_gap, 2.5)
+
+  def test_existing_moderate_braking_can_use_two_or_one_point_eight_meter_target(self):
+    for distance,expected in ((3.7,2.),(3.6,1.8)):
+      self.setUp()
+      for _ in range(20):
+        self.lead.dRel-=.25
+        self.tick()
+      self.lead.dRel=distance;self.lead.vRel=-2.
+      self.h.distance=distance+.1;self.h.relative=-2.
+      stamp=self.h.stamp+.05
+      self.h.update(self.lead,2.,-1.7,stamp,stamp,True)
+      self.assertEqual(self.h.target_gap,expected)
+
+  def test_shorter_target_never_weakens_original_mpc_braking(self):
+    from openpilot.selfdrive.controls.lib.lead_gap_reserve import apply_lead_gap_cap
+    result=apply_lead_gap_cap(-3.,0.,0.,-.8,.5,.2,-3.,.05)
+    self.assertEqual(result[0],-3.)
 
   def test_disabled_clears(self):
     for _ in range(20):self.tick()

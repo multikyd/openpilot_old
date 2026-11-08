@@ -131,7 +131,7 @@ class TerminalStopRelease:
 
   def update(self, lead, other, speed, command, previous, stamp, now, enabled, dt):
     values = (speed, command, previous, stamp, now, dt, lead.dRel, lead.vRel,
-              lead.vLead, lead.modelProb, lead.dPath)
+              lead.vLead, lead.aLeadK, lead.modelProb, lead.dPath)
     if (not enabled or not all(math.isfinite(x) for x in values) or
         not 0. < dt <= .05 or not 0. <= now-stamp <= .2 or
         not lead.present or not lead.radar or lead.radarTrackId < 0 or
@@ -148,9 +148,14 @@ class TerminalStopRelease:
       self.confirm = self.confirm+elapsed if continuous else 0.
       self.identity, self.stamp = lead.radarTrackId, stamp
       self.distance, self.relative = lead.dRel, lead.vRel
-    # Preserve stronger braking and do not manufacture positive acceleration.
+    # A stronger inherited brake request can also outlast a stopped lead's
+    # deceleration. Relax it only in the final crawl after longer confirmation;
+    # the same stopping-room calculation below still has to pass.
+    gentle = -2. < command < -.5
+    settled_strong = (-2.8 < command <= -2. and speed <= .8 and self.confirm >= 1. and
+                      abs(lead.vLead) < .3 and lead.aLeadK > -.8)
     if (self.confirm < .5 or not 0. <= speed <= 1.5 or abs(lead.vLead) >= .5 or
-        not 2.5 <= lead.dRel <= 4.5 or not -2. < command < -.5):
+        not 2.5 <= lead.dRel <= 4.5 or not (gentle or settled_strong)):
       return command
     closing = max(speed, -lead.vRel, 0.)
     # Include actuator travel before evaluating room above a 2 m reserve.

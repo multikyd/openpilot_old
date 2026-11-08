@@ -254,6 +254,26 @@ class TestTerminalStopRelease(unittest.TestCase):
     self.assertEqual(result,-1.2)
     self.assertEqual(self.h.confirm,0.)
 
+  def test_stronger_terminal_request_can_ease_after_lead_has_settled(self):
+    self.tick(30)
+    self.assertGreater(self.tick(command=-2.5,previous=-2.5),-2.5)
+    self.assertLessEqual(self.tick(command=-2.5,previous=-2.5),-2.485+1e-9)
+
+  def test_strong_terminal_release_requires_long_confirmation_and_ended_lead_braking(self):
+    self.arm()
+    self.assertEqual(self.tick(command=-2.5,previous=-2.5),-2.5)
+    self.tick(30);self.l.aLeadK=-1.
+    self.assertEqual(self.tick(command=-2.5,previous=-2.5),-2.5)
+    self.l.aLeadK=0.;self.l.vRel=-1.
+    self.assertEqual(self.tick(speed=1.,command=-2.5,previous=-2.5),-2.5)
+
+  def test_strong_terminal_request_cannot_ease_without_stopping_room(self):
+    self.tick(30);self.l.dRel=2.55;self.l.vRel=-1.2
+    # Closing speed includes radar evidence, even when measured ego speed is low.
+    self.assertEqual(self.tick(command=-2.5,previous=-2.5),-2.5)
+    self.l.aLeadK=float('nan')
+    self.assertEqual(self.tick(command=-2.5,previous=-2.5),-2.5)
+
   def test_actual_longcontrol_update_applies_release_only_before_hold(self):
     import ast
     tree=ast.parse((Path(__file__).parents[1]/'lib/longcontrol.py').read_text(encoding='utf8'))
