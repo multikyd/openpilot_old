@@ -175,6 +175,57 @@ class TestOvertakePlan(unittest.TestCase):
       result = h.update(11. if invalid == 'gap' else 10.1, 0, 0, False, invalid != 'stale')
       self.assertEqual(result, (0, 0, 0))
 
+  def test_five_kph_slower_lead_is_an_overtake_candidate(self):
+    announcements = 0
+    for _ in range(66):
+      result = self.tick(speed=105./3.6, set_speed=110./3.6, lead_speed=105./3.6)
+      announcements += result.announce_start
+    self.assertEqual(result.phase, 'signal_left')
+    self.assertEqual(announcements, 1)
+    self.assertFalse(self.tick().announce_start)
+
+  def test_pass_target_uses_offset_adjusted_setting_plus_ten_capped_at_130(self):
+    self.x = replace(self.x, speed=110./3.6, set_speed=120./3.6, lead_speed=105./3.6)
+    self.passing()
+    self.assertAlmostEqual(self.h.decision().target_speed*3.6, 130.)
+    self.assertEqual(self.tick(.5, speed=129./3.6).phase, 'passing')
+    # A high passing speed must not cancel the return just because boost ends.
+    self.assertEqual(self.tick(2., rear_track_id=40, rear_gap=60.).phase, 'signal_right')
+    self.assertEqual(self.tick(.1).phase, 'signal_right')
+
+  def test_return_announcement_occurs_once_after_clearance(self):
+    self.passing()
+    announcements = 0
+    for _ in range(46):
+      result = self.tick(rear_track_id=40, rear_gap=50.)
+      announcements += result.announce_return
+    self.assertEqual(result.phase, 'signal_right')
+    self.assertEqual(announcements, 1)
+    self.assertFalse(self.tick().announce_return)
+
+  def test_driver_steering_cancels_every_active_phase(self):
+    for phase in ('signal_left', 'enter_left', 'passing', 'signal_right', 'return_right'):
+      self.setUp()
+      self.h.phase = phase
+      result = self.tick(driver_override=True)
+      self.assertEqual((result.phase, result.reason), ('cooldown', 'driver_override'))
+      self.assertEqual(result.signal_direction, 0)
+      self.assertFalse(result.announce_start)
+
+  def test_overtake_acceleration_ramps_and_resets(self):
+    h = m.OvertakeAcceleration()
+    self.assertEqual(h.update(.3, .05, False), .3)
+    previous = .3
+    for _ in range(120):
+      current = h.update(.3, .05, True)
+      self.assertLessEqual(current-previous, .15*.05+1e-9)
+      self.assertLessEqual(current, 1.)
+      previous = current
+    self.assertAlmostEqual(current, 1.)
+    self.assertEqual(h.update(.3, .05, False), .3)
+    self.assertEqual(h.update(1.4, .05, True), 1.4)
+    self.assertEqual(h.update(.3, .5, True), .3)
+
   def test_original_vehicle_survives_corner_preference_and_new_front_lead(self):
     from types import SimpleNamespace as NS
     new_lead = NS(present=True, radar=True, radarTrackId=99, dRel=70.)

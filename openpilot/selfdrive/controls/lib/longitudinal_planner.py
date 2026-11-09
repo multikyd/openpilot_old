@@ -3,6 +3,7 @@ import math
 import numpy as np
 
 import openpilot.cereal.messaging as messaging
+from openpilot.cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -18,6 +19,8 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.cutin_anticipation import CutInAnticipation
 from openpilot.selfdrive.controls.lib.lead_gap_reserve import LeadGapReserve, NormalStopGap, apply_lead_gap_cap, brake_light_accel_cap
 from openpilot.selfdrive.controls.lib.turn_exit_recovery import TurnExitRecovery
+from openpilot.selfdrive.controls.lib.overtake_plan import OvertakeAcceleration
+from openpilot.selfdrive.selfdrived.events import EventName
 from openpilot.selfdrive.carrot.carrot_functions import XState
 
 import time
@@ -82,6 +85,10 @@ class LongitudinalPlanner:
     self.lead_gap_reserve = LeadGapReserve()
     self.normal_stop_gap = NormalStopGap()
     self.turn_exit_recovery = TurnExitRecovery()
+    self.overtake_acceleration = OvertakeAcceleration()
+    self.overtake_active = False
+    self.overtake_announce = False
+    self.overtake_return_announce = False
     self._turn_exit_active = False
     self._assist_log_state = None
     self._assist_log_time = -100.
@@ -170,7 +177,7 @@ class LongitudinalPlanner:
       throttle_prob = 1.0
     return x, v, a, j, throttle_prob
 
-  def update(self, sm, carrot):
+  def update(self, sm, carrot, overtake=None):
     self.mpc.mode = 'blended' if sm['selfdriveState'].experimentalMode else 'acc'
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -181,6 +188,21 @@ class LongitudinalPlanner:
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
 
+    cs = sm['carState']
+    # Offline plans must never change the real cruise target or announce a
+    # maneuver. A connected executor must explicitly confirm this capability.
+    connected = (overtake is not None and overtake.actuation_connected and
+                 sm['carControl'].latActive and sm['carControl'].longActive and cs.canValid and
+                 not (cs.steeringPressed or cs.gasPressed or cs.brakePressed) and
+                 sm.all_checks(['carState', 'carControl', 'modelV2', 'radarState']) and
+                 all(0. <= sm.logMonoTime['modelV2']*1e-9-sm.logMonoTime[k]*1e-9 <= .2
+                     for k in ('carState', 'carControl', 'radarState')))
+    self.overtake_active = bool(connected and overtake.phase == 'passing')
+    self.overtake_announce = bool(connected and overtake.announce_start)
+    self.overtake_return_announce = bool(connected and overtake.announce_return)
+    if self.overtake_active and math.isfinite(overtake.target_speed):
+      # Feed the temporary target through the same navigation and curve limits.
+      v_cruise_kph = max(v_cruise_kph, min(130., overtake.target_speed * CV.MS_TO_KPH))
     self.v_cruise_kph = carrot.update(sm, v_cruise_kph, self.mpc.mode)
     self.mpc.mode = carrot.mode
     v_cruise = self.v_cruise_kph * CV.KPH_TO_MS
@@ -230,6 +252,8 @@ class LongitudinalPlanner:
       cloudlog.event('turn_exit_recovery', active=recovery_active, v_ego=float(v_ego),
                      normal_accel=float(normal_accel), recovery_accel=float(recovery_accel))
       self._turn_exit_active = recovery_active
+    recovery_accel = self.overtake_acceleration.update(
+      recovery_accel, self.dt, self.overtake_active and fresh and not reset_state and self.mpc.mode == 'acc')
     if self.mpc.mode == 'acc':
       #accel_limits = [A_CRUISE_MIN, get_max_accel(v_ego)]
       accel_limits = [A_CRUISE_MIN, recovery_accel]
@@ -427,6 +451,12 @@ class LongitudinalPlanner:
     longitudinalPlan.tFollow = float(self.mpc.t_follow)
     longitudinalPlan.desiredDistance = float(self.mpc.desired_distance)
     longitudinalPlan.events = carrot.events.to_msg()
+    if self.overtake_announce or self.overtake_return_announce:
+      # A single event on entry, using the ordinary text and sound pipeline.
+      event = log.OnroadEvent.new_message()
+      event.name = EventName.overtakeStart if self.overtake_announce else EventName.overtakeReturn
+      event.permanent = True
+      longitudinalPlan.events = [*longitudinalPlan.events, event]
     longitudinalPlan.myDrivingMode = carrot.myDrivingMode.value
 
     longitudinalPlan.e2eX = self.mpc.e2e_x.tolist()

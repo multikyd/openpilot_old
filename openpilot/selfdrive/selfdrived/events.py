@@ -1048,6 +1048,14 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.PERMANENT: Alert("", "", AlertStatus.normal, AlertSize.none,
                         Priority.LOWEST, VisualAlert.none, AudibleAlert.bumpChime, .2),
   },
+  EventName.overtakeReturn: {
+    ET.PERMANENT: Alert("RETURNING", "", AlertStatus.normal, AlertSize.small,
+                        Priority.LOW, VisualAlert.none, AudibleAlert.overtakeReturn, 2.5),
+  },
+  EventName.overtakeStart: {
+    ET.PERMANENT: Alert("OVERTAKING", "", AlertStatus.normal, AlertSize.small,
+                        Priority.LOW, VisualAlert.none, AudibleAlert.overtakeStart, 2.5),
+  },
   EventName.tbtBlinkerLeft: {
     ET.PERMANENT: EngagementAlert(AudibleAlert.tbtBlinkerLeft),
   },

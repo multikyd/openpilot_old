@@ -158,6 +158,8 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     signalCoast @119;
     tbtBlinkerLeft @120;
     tbtBlinkerRight @121;
+    overtakeStart @122;
+    overtakeReturn @123;
   }
 }
 
@@ -895,6 +897,8 @@ struct SelfdriveState {
     signalCoast @22;
     tbtBlinkerLeft @23;
     tbtBlinkerRight @24;
+    overtakeStart @25;
+    overtakeReturn @26;
   }
 
   enum OpenpilotState @0xdbe58b96d2d1ac61 {

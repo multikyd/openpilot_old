@@ -52,6 +52,9 @@ class OvertakeDecision:
   # An intent is never an actuation command, even in offline scenarios.
   actuation_connected: bool = False
   signal_direction: int = 0
+  target_speed: float = 0.  # m/s, includes the existing cruise offset
+  announce_start: bool = False
+  announce_return: bool = False
 
 
 class OvertakePlan:
@@ -71,13 +74,17 @@ class OvertakePlan:
     self.reason = "waiting"
     self.finishing_seen = False
     self.lane_change_observation = LaneChangeObservation()
+    self.announce_start = False
+    self.announce_return = False
 
   def decision(self, reason=None, blocked=()):
     direction = -1 if self.phase in ("signal_left","enter_left") else 1 if self.phase in ("signal_right","return_right") else 0
     return OvertakeDecision(self.phase, reason or self.reason, direction,
                             self.phase in ("enter_left","return_right") and not self.running_seen,
                             self.original_speed, tuple(blocked),
-                            signal_direction=0 if self.finishing_seen else direction)
+                            signal_direction=0 if self.finishing_seen else direction,
+                            target_speed=min(self.original_speed + 10./3.6, 130./3.6) if self.phase == "passing" else self.original_speed,
+                            announce_start=self.announce_start, announce_return=self.announce_return)
 
   def transition(self, phase, now, reason):
     self.phase, self.since, self.reason = phase, now, reason
@@ -92,6 +99,8 @@ class OvertakePlan:
     return self.decision()
 
   def update(self, x):
+    self.announce_start = False
+    self.announce_return = False
     finite = all(math.isfinite(v) for v in
                  (x.now,x.speed,x.set_speed,x.lead_speed,x.lead_distance,x.rear_gap,x.signal_max_seconds))
     if not finite:
@@ -102,8 +111,9 @@ class OvertakePlan:
                        (x.route_clear,"route_conflict"),(x.signal_verified and x.signal_max_seconds >= self.SIGNAL_SECONDS + self.CHANGE_SECONDS,
                                                         "signal_path_unverified"),
                        (x.rear_tracking_verified or x.oem_permission_valid,"rear_permission_unavailable"),
-                       (70./3.6 <= x.speed <= 120./3.6,"speed_outside_envelope"),
-                       (x.speed <= x.set_speed+5./3.6,"speed_above_setting")):
+                       (70./3.6 <= x.speed <= 130./3.6,"speed_outside_envelope"),
+                       (x.speed <= (min(self.original_speed+10./3.6,130./3.6) if self.phase in ("passing", "signal_right", "return_right") else x.set_speed)+5./3.6,
+                        "speed_above_setting")):
       if not ok:
         blockers.append(reason)
     if blockers:
@@ -137,7 +147,7 @@ class OvertakePlan:
 
     if self.phase == "idle":
       slow = (x.lead_reliable and x.lead_id >= 0 and
-              0. <= x.lead_speed <= x.set_speed-10./3.6 and
+              0. <= x.lead_speed <= x.set_speed-3./3.6 and
               max(15.,x.speed) <= x.lead_distance <= 100.)
       if x.lead_id != self.target_id:
         self.slow = 0.
@@ -146,6 +156,7 @@ class OvertakePlan:
       if self.slow >= 3. and self.left_green >= 1.:
         self.original_speed = x.set_speed
         self.transition("signal_left",x.now,"left_permitted")
+        self.announce_start = True
     elif self.phase in ("signal_left","signal_right"):
       left = self.phase == "signal_left"
       ok = left_ok if left else right_ok and passed
@@ -182,6 +193,7 @@ class OvertakePlan:
         return self.cancel(x.now,"pass_completion_unverified")
       if x.now-self.since >= 2. and self.rear_clear >= 1. and self.right_green >= 1.:
         self.transition("signal_right",x.now,"original_vehicle_cleared")
+        self.announce_return = True
     return self.decision()
 
 
@@ -227,3 +239,18 @@ def observe_original_vehicle(target_id, vehicles):
       if vehicle.dRel < 0. and (rear is None or vehicle.dRel > rear.dRel):
         rear = vehicle
   return ahead, rear
+
+
+class OvertakeAcceleration:
+  """Raise only the cruise acceleration ceiling of a connected passing maneuver."""
+  def __init__(self):
+    self.extra = 0.
+
+  def update(self, normal_max, dt, active):
+    if not active or not all(math.isfinite(v) for v in (normal_max, dt)) or not 0. < dt <= .2:
+      self.extra = 0.
+      return normal_max
+    # At most 0.15 m/s^3 increase in the extra allowance; stronger existing
+    # settings remain unchanged. Curve, lead and actuator caps still run later.
+    self.extra = min(max(0., 1.0-normal_max), self.extra + .15*dt)
+    return normal_max + self.extra

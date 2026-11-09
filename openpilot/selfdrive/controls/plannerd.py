@@ -92,7 +92,7 @@ def observe_overtake_plan(sm, plan, last_logged):
     change_completed=change_completed)
   result = plan.update(x)
   candidate = (x.highway and x.speed >= 70./3.6 and x.lead_reliable and
-               x.lead_speed <= x.set_speed-10./3.6)
+               x.lead_speed <= x.set_speed-3./3.6)
   if candidate and now-last_logged >= 5.:
     cloudlog.event('highway_overtake_plan', phase=result.phase, reason=result.reason,
                    blocked_by=list(result.blocked_by), actuation_connected=False,
@@ -139,11 +139,11 @@ def main():
     if sm.updated['modelV2']:
       lateral_planner.update(sm, carrot)
       lateral_planner.publish(sm, pm)
-      longitudinal_planner.update(sm, carrot)
-      longitudinal_planner.publish(sm, pm, carrot)
       if observe_overtake:
         last_overtake_log = log_highway_overtake_candidate(sm, last_overtake_log)
         last_overtake_plan_log = observe_overtake_plan(sm, overtake_plan, last_overtake_plan_log)
+      longitudinal_planner.update(sm, carrot, overtake_plan.decision() if observe_overtake else None)
+      longitudinal_planner.publish(sm, pm, carrot)
 
       ldw.update(sm.frame, sm['modelV2'], sm['carState'], sm['carControl'])
       msg = messaging.new_message('driverAssistance')
