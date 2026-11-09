@@ -213,3 +213,17 @@ class LaneChangeObservation:
     self.direction = 0
     self.crossed = self.finishing = False
     return 0, 0, completed
+
+
+def observe_original_vehicle(target_id, vehicles):
+  """Follow the saved radar identity; disappearance never proves a completed pass."""
+  ahead = False
+  rear = None
+  for vehicle in vehicles:
+    if (target_id >= 0 and vehicle.present and vehicle.radar and
+        vehicle.radarTrackId == target_id and math.isfinite(vehicle.dRel)):
+      ahead |= vehicle.dRel >= 0.
+      # If duplicate observations disagree, retain the smaller rear clearance.
+      if vehicle.dRel < 0. and (rear is None or vehicle.dRel > rear.dRel):
+        rear = vehicle
+  return ahead, rear

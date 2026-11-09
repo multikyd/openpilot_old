@@ -767,6 +767,9 @@ struct RadarState @0x9a185389d6fdd05f {
   leadsLeft2 @19 : List(LeadData);
   leadsRight2 @20 : List(LeadData);
   leadsCutIn @21 : List(LeadData);
+  # Preserve front-radar identities when side leads prefer corner radar.
+  frontRadarLeadsLeft @22 : List(LeadData);
+  frontRadarLeadsRight @23 : List(LeadData);
 
   struct LeadData {
     dRel @0 :Float32;  # m from the front bumper of the car

@@ -8,7 +8,7 @@ from openpilot.common.realtime import Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
-from openpilot.selfdrive.controls.lib.overtake_plan import OvertakePlan, OvertakeInput
+from openpilot.selfdrive.controls.lib.overtake_plan import OvertakePlan, OvertakeInput, observe_original_vehicle
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 
 from openpilot.selfdrive.controls.lib.lateral_planner import LateralPlanner
@@ -66,14 +66,11 @@ def observe_overtake_plan(sm, plan, last_logged):
   change_running, change_finishing, change_completed = plan.lane_change_observation.update(
     now, int(md.meta.laneChangeState.raw), int(md.meta.laneChangeDirection.raw),
     bool(md.meta.laneChangeCrossed), fresh)
-  original_ahead = False
-  original_rear = None
-  for vehicle in (lead, *sm['radarState'].leadsRight):
-    if (vehicle.present and vehicle.radar and vehicle.radarTrackId == plan.target_id and
-        plan.target_id >= 0 and math.isfinite(vehicle.dRel)):
-      original_ahead |= vehicle.dRel >= 0.
-      if vehicle.dRel < 0.:
-        original_rear = vehicle
+  # Corner-radar preference must not hide the original front-radar track
+  # when that vehicle moves from our lead into the right-hand lane.
+  radar = sm['radarState']
+  original_ahead, original_rear = observe_original_vehicle(
+    plan.target_id, (lead, *radar.leadsCenter, *radar.frontRadarLeadsRight, *radar.leadsRight))
 
   x = OvertakeInput(
     now=now, enabled=bool(cc.latActive and cc.longActive and cs.canValid),

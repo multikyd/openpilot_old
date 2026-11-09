@@ -175,12 +175,30 @@ class TestOvertakePlan(unittest.TestCase):
       result = h.update(11. if invalid == 'gap' else 10.1, 0, 0, False, invalid != 'stale')
       self.assertEqual(result, (0, 0, 0))
 
+  def test_original_vehicle_survives_corner_preference_and_new_front_lead(self):
+    from types import SimpleNamespace as NS
+    new_lead = NS(present=True, radar=True, radarTrackId=99, dRel=70.)
+    original_right = NS(present=True, radar=True, radarTrackId=40, dRel=12.)
+    corner_right = NS(present=True, radar=True, radarTrackId=1040, dRel=5.)
+    self.assertEqual(m.observe_original_vehicle(40, [new_lead, original_right, corner_right]), (True, None))
+    # Losing the saved identity supplies neither a rear track nor a clearance.
+    self.assertEqual(m.observe_original_vehicle(40, [new_lead, corner_right]), (False, None))
+
+  def test_original_vehicle_uses_conservative_duplicate_rear_distance(self):
+    from types import SimpleNamespace as NS
+    observations = [NS(present=True, radar=True, radarTrackId=40, dRel=d) for d in (-40., -12.)]
+    ahead, rear = m.observe_original_vehicle(40, observations)
+    self.assertFalse(ahead)
+    self.assertEqual(rear.dRel, -12.)
+    observations.append(NS(present=True, radar=True, radarTrackId=40, dRel=3.))
+    self.assertTrue(m.observe_original_vehicle(40, observations)[0])
+
   def test_actual_production_observer_records_blockers_without_requesting_change(self):
     from types import SimpleNamespace as NS
     tree=ast.parse((Path(__file__).parents[1]/'plannerd.py').read_text(encoding='utf8'))
     f=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='observe_overtake_plan')
     events=[]
-    env=dict(OvertakeInput=m.OvertakeInput,math=__import__('math'),cloudlog=NS(event=lambda *a,**kw:events.append(kw)))
+    env=dict(OvertakeInput=m.OvertakeInput,observe_original_vehicle=m.observe_original_vehicle,math=__import__('math'),cloudlog=NS(event=lambda *a,**kw:events.append(kw)))
     exec(compile(ast.Module(body=[f],type_ignores=[]),'actual_overtake_observer','exec'),env)
     class SM(dict):
       logMonoTime={k:int(10e9) for k in ('modelV2','carState','carControl','carrotMan','radarState')}
@@ -194,7 +212,7 @@ class TestOvertakePlan(unittest.TestCase):
           carrotMan=NS(naviHighway=True,xTurnInfo=-1,xDistToTurn=-1),
           modelV2=NS(meta=NS(laneWidthLeft=3.5,laneWidthRight=3.5,laneChangeCrossed=False,
                             laneChangeState=NS(raw=0),laneChangeDirection=NS(raw=0)),laneLineProbs=[.95]*4),
-          radarState=NS(leadsRight=[],leadOne=NS(radarTrackId=40,vLead=24.,dRel=55.,present=True,radar=True,modelProb=.99)))
+          radarState=NS(leadsRight=[],leadsCenter=[],frontRadarLeadsRight=[],leadOne=NS(radarTrackId=40,vLead=24.,dRel=55.,present=True,radar=True,modelProb=.99)))
     result=env['observe_overtake_plan'](sm,self.h,-1.)
     self.assertEqual(result,10.)
     self.assertEqual(self.h.phase,'blocked')

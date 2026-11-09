@@ -1002,6 +1002,8 @@ class RadarD:
       self.radar_state.leadsCenter = []
       self.radar_state.leadsRight = []
       self.radar_state.leadsCutIn = []
+      self.radar_state.frontRadarLeadsLeft = []
+      self.radar_state.frontRadarLeadsRight = []
       self.radar_state.leadsLeft2 = []
       self.radar_state.leadsRight2 = []
       self.radar_state.leadLeft = empty_lead()
@@ -1056,6 +1058,8 @@ class RadarD:
 
     self.radar_state.leadsLeft   = left_list
     self.radar_state.leadsRight  = right_list
+    self.radar_state.frontRadarLeadsLeft = front_left_list
+    self.radar_state.frontRadarLeadsRight = front_right_list
     self.radar_state.leadsCenter = center_list
     self.radar_state.leadsCutIn = cutin_list
     self.leadCutIn = min(
