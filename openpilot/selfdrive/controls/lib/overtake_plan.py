@@ -25,6 +25,7 @@ class OvertakeInput:
   lead_speed: float = 0.
   lead_distance: float = 0.
   lead_reliable: bool = False
+  traffic_eligible: bool = False
   left_ready: bool = False
   right_ready: bool = False
   left_lane_valid: bool = False
@@ -55,6 +56,7 @@ class OvertakeDecision:
   target_speed: float = 0.  # m/s, includes the existing cruise offset
   announce_start: bool = False
   announce_return: bool = False
+  pass_advised: bool = False
 
 
 class OvertakePlan:
@@ -74,6 +76,7 @@ class OvertakePlan:
     self.reason = "waiting"
     self.finishing_seen = False
     self.lane_change_observation = LaneChangeObservation()
+    self.pass_advised = False
     self.announce_start = False
     self.announce_return = False
 
@@ -84,7 +87,7 @@ class OvertakePlan:
                             self.original_speed, tuple(blocked),
                             signal_direction=0 if self.finishing_seen else direction,
                             target_speed=min(self.original_speed + 10./3.6, 130./3.6) if self.phase == "passing" else self.original_speed,
-                            announce_start=self.announce_start, announce_return=self.announce_return)
+                            announce_start=self.announce_start, announce_return=self.announce_return, pass_advised=self.pass_advised)
 
   def transition(self, phase, now, reason):
     self.phase, self.since, self.reason = phase, now, reason
@@ -146,7 +149,7 @@ class OvertakePlan:
     self.rear_clear = self.rear_clear+dt if passed else 0.
 
     if self.phase == "idle":
-      slow = (x.lead_reliable and x.lead_id >= 0 and
+      slow = (x.traffic_eligible and x.lead_reliable and x.lead_id >= 0 and
               0. <= x.lead_speed <= x.set_speed-3./3.6 and
               max(15.,x.speed) <= x.lead_distance <= 100.)
       if x.lead_id != self.target_id:
@@ -159,7 +162,7 @@ class OvertakePlan:
         self.announce_start = True
     elif self.phase in ("signal_left","signal_right"):
       left = self.phase == "signal_left"
-      ok = left_ok if left else right_ok and passed
+      ok = left_ok and x.traffic_eligible if left else right_ok and passed
       if not ok:
         return self.cancel(x.now,"permission_lost_before_change")
       lamp = x.left_lamp and not x.right_lamp if left else x.right_lamp and not x.left_lamp

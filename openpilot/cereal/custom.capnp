@@ -50,6 +50,8 @@ struct CarrotMan @0x81c2f05a394cf4af {
   bumpPassSpeed @36 :Float32;
   signalDisplay @37 :SignalDisplay;
   naviHighway @38 :Bool;
+  roadLimitSpeedRaw @39 :Int32; # km/h before cruise offsets and legacy display fixes
+  roadLimitSpeedValid @40 :Bool;
 }
 
 struct SignalDisplay {

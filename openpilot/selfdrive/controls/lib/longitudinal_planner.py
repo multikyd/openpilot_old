@@ -87,6 +87,7 @@ class LongitudinalPlanner:
     self.turn_exit_recovery = TurnExitRecovery()
     self.overtake_acceleration = OvertakeAcceleration()
     self.overtake_active = False
+    self.pass_advised = False
     self.overtake_announce = False
     self.overtake_return_announce = False
     self._turn_exit_active = False
@@ -189,6 +190,7 @@ class LongitudinalPlanner:
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
 
     cs = sm['carState']
+    self.pass_advised = bool(overtake is not None and overtake.pass_advised)
     # Offline plans must never change the real cruise target or announce a
     # maneuver. A connected executor must explicitly confirm this capability.
     connected = (overtake is not None and overtake.actuation_connected and
@@ -431,6 +433,7 @@ class LongitudinalPlanner:
     longitudinalPlan.accels = self.a_desired_trajectory.tolist()
     longitudinalPlan.jerks = self.j_desired_trajectory.tolist()
 
+    longitudinalPlan.overtakeAdvised = self.pass_advised
     longitudinalPlan.hasLead = sm['radarState'].leadOne.present
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.fcw = self.fcw

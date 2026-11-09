@@ -75,3 +75,23 @@ def draw_signal_panel(rect, font, display):
   else:
     text(value,x+113,y+5,width-121,64,color,max_height=height-10)
   text(detail,x+10,y+height+4,width-20,20,amber if source=='EST' else rl.WHITE)
+
+
+def draw_overtake_advice(rect, font):
+  """Render one recommendation in the existing signal header viewport."""
+  box = signal_box(rect.x, rect.y, rect.width)
+  if box is None:
+    return
+  x, y, width, height = box
+  background = rl.Color(25, 48, 42, 245)
+  ink = rl.Color(120, 235, 175, 255)
+  viewport = rl.Rectangle(x, y, width, height)
+  rl.draw_rectangle_rounded(viewport, .23, 10, background)
+  rl.draw_rectangle_rounded_lines_ex(viewport, .23, 10, 1, ink)
+  label = 'PASS ADVISED'
+  size = min(19., height*.48)
+  measured = measure_text_cached(font, label, size)
+  if measured.x > width-12:
+    size *= (width-12)/max(measured.x, 1.)
+    measured = measure_text_cached(font, label, size)
+  rl.draw_text_ex(font, label, rl.Vector2(x+(width-measured.x)/2, y+(height-size)/2), size, 0, ink)

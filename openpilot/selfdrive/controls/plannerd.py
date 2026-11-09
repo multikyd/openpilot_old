@@ -8,6 +8,7 @@ from openpilot.common.realtime import Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
+from openpilot.selfdrive.controls.lib.overtake_traffic import assess_traffic, OvertakeAdviceConfirmation
 from openpilot.selfdrive.controls.lib.overtake_plan import OvertakePlan, OvertakeInput, observe_original_vehicle
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 
@@ -72,11 +73,18 @@ def observe_overtake_plan(sm, plan, last_logged):
   original_ahead, original_rear = observe_original_vehicle(
     plan.target_id, (lead, *radar.leadsCenter, *radar.frontRadarLeadsRight, *radar.leadsRight))
 
+  traffic = assess_traffic(
+    fresh=fresh, limit_valid=bool(nav.roadLimitSpeedValid),
+    road_limit=float(nav.roadLimitSpeedRaw)/3.6, set_speed=float(cs.vCruise)/3.6, lead=lead,
+    center=radar.leadsCenter,
+    left=(*radar.frontRadarLeadsLeft, *radar.leadsLeft),
+    right=(*radar.frontRadarLeadsRight, *radar.leadsRight))
   x = OvertakeInput(
     now=now, enabled=bool(cc.latActive and cc.longActive and cs.canValid),
     highway=bool(nav.naviHighway), fresh=fresh, route_clear=not near_route,
     driver_override=override, speed=float(cs.vEgo), set_speed=float(cs.vCruise)/3.6,
     lead_id=int(lead.radarTrackId), lead_speed=float(lead.vLead), lead_distance=float(lead.dRel),
+    traffic_eligible=traffic.eligible,
     lead_reliable=bool(lead.present and lead.radar and lead.modelProb >= .9),
     left_ready=bool(cs.leftOemLaneChangeReady), right_ready=bool(cs.rightOemLaneChangeReady),
     left_lane_valid=left_lane, right_lane_valid=right_lane,
@@ -90,12 +98,22 @@ def observe_overtake_plan(sm, plan, last_logged):
     rear_gap=-float(original_rear.dRel) if original_rear is not None else 0.,
     change_running=change_running, change_finishing=change_finishing,
     change_completed=change_completed)
+  if not hasattr(plan, 'advice_confirmation'):
+    plan.advice_confirmation = OvertakeAdviceConfirmation()
+  plan.pass_advised = plan.advice_confirmation.update(
+    now, x.enabled and x.highway and x.fresh and not x.driver_override and x.route_clear and
+    x.lead_reliable and x.traffic_eligible and x.oem_permission_valid and
+    x.left_ready and x.left_lane_valid and not x.left_bsm and
+    70./3.6 <= x.speed <= 130./3.6 and plan.phase in ('idle', 'blocked'), x.lead_id)
   result = plan.update(x)
   candidate = (x.highway and x.speed >= 70./3.6 and x.lead_reliable and
                x.lead_speed <= x.set_speed-3./3.6)
   if candidate and now-last_logged >= 5.:
     cloudlog.event('highway_overtake_plan', phase=result.phase, reason=result.reason,
                    blocked_by=list(result.blocked_by), actuation_connected=False,
+                   pass_advised=plan.pass_advised, traffic_reason=traffic.reason, ahead_gap_m=traffic.ahead_gap,
+                   left_flow_faster=traffic.left_faster, right_flow_faster=traffic.right_faster,
+                   road_limit_kph=float(nav.roadLimitSpeedRaw), limit_valid=bool(nav.roadLimitSpeedValid),
                    left_green=x.left_ready, right_green=x.right_ready,
                    left_geometry=left_lane, right_geometry=right_lane,
                    left_bsm=x.left_bsm, right_bsm=x.right_bsm,

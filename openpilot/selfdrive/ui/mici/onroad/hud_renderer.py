@@ -9,7 +9,7 @@ from openpilot.selfdrive.ui.mici.onroad.lead_brake_panel import LeadBrakePanel
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.mici.onroad.hud_layout import (LEFT_CENTER, HEADER_TOP, left_car_box,
                                                         lower_notice_box, gap_bar_boxes, select_road_notice)
-from openpilot.selfdrive.ui.mici.onroad.signal_renderer import draw_signal_panel
+from openpilot.selfdrive.ui.mici.onroad.signal_renderer import draw_signal_panel, draw_overtake_advice
 from openpilot.selfdrive.ui.mici.onroad.bookmark_transfer import BookmarkTransferBanner
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus, ChestnutState
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -218,7 +218,15 @@ class HudRenderer(Widget):
     if (self._can_draw_top_icons and ui_state.started and
         ui_state.sm.valid['carrotMan'] and ui_state.sm.alive['carrotMan'] and
         0 <= time.monotonic()-ui_state.sm.recv_time['carrotMan'] < 1):
-      draw_signal_panel(rect, self._font_bold, ui_state.sm['carrotMan'].signalDisplay)
+      nav = ui_state.sm['carrotMan']
+      if getattr(nav, 'naviHighway', False):
+        now = time.monotonic()
+        fresh_plan = (ui_state.sm.valid['longitudinalPlan'] and ui_state.sm.alive['longitudinalPlan'] and
+                      0 <= now-ui_state.sm.recv_time['longitudinalPlan'] < .3)
+        if fresh_plan and getattr(ui_state.sm['longitudinalPlan'], 'overtakeAdvised', False):
+          draw_overtake_advice(rect, self._font_bold)
+      else:
+        draw_signal_panel(rect, self._font_bold, nav.signalDisplay)
     if self._can_draw_top_icons and not self.setspeed_changed:
       self._draw_car_stat(rect)
       if ui_state.bumpTarget <= 0 and ui_state.bumpLearningText:

@@ -14,7 +14,7 @@ class TestOvertakePlan(unittest.TestCase):
     self.h=m.OvertakePlan()
     self.x=m.OvertakeInput(now=10.,enabled=True,highway=True,fresh=True,
       signal_verified=True,signal_max_seconds=12.,rear_tracking_verified=True,route_clear=True,
-      speed=27.,set_speed=30.,lead_id=40,lead_speed=24.,lead_distance=55.,lead_reliable=True,
+      speed=27.,set_speed=30.,lead_id=40,lead_speed=24.,lead_distance=55.,lead_reliable=True,traffic_eligible=True,
       left_ready=True,right_ready=True,left_lane_valid=True,right_lane_valid=True,
       left_bsm=False,right_bsm=False)
 
@@ -203,6 +203,11 @@ class TestOvertakePlan(unittest.TestCase):
     self.assertEqual(announcements, 1)
     self.assertFalse(self.tick().announce_return)
 
+  def test_traffic_assessment_must_allow_entry_and_remain_valid_before_departure(self):
+    self.assertEqual(self.tick(4., traffic_eligible=False).phase, 'idle')
+    self.assertEqual(self.tick(3.3, traffic_eligible=True).phase, 'signal_left')
+    self.assertEqual(self.tick(traffic_eligible=False).phase, 'cooldown')
+
   def test_driver_steering_cancels_every_active_phase(self):
     for phase in ('signal_left', 'enter_left', 'passing', 'signal_right', 'return_right'):
       self.setUp()
@@ -249,7 +254,7 @@ class TestOvertakePlan(unittest.TestCase):
     tree=ast.parse((Path(__file__).parents[1]/'plannerd.py').read_text(encoding='utf8'))
     f=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='observe_overtake_plan')
     events=[]
-    env=dict(OvertakeInput=m.OvertakeInput,observe_original_vehicle=m.observe_original_vehicle,math=__import__('math'),cloudlog=NS(event=lambda *a,**kw:events.append(kw)))
+    env=dict(OvertakeInput=m.OvertakeInput,OvertakeAdviceConfirmation=lambda:NS(update=lambda *a:False),observe_original_vehicle=m.observe_original_vehicle,assess_traffic=lambda **kw:NS(eligible=False,reason="unknown",ahead_gap=0.,left_faster=False,right_faster=False),math=__import__('math'),cloudlog=NS(event=lambda *a,**kw:events.append(kw)))
     exec(compile(ast.Module(body=[f],type_ignores=[]),'actual_overtake_observer','exec'),env)
     class SM(dict):
       logMonoTime={k:int(10e9) for k in ('modelV2','carState','carControl','carrotMan','radarState')}
@@ -260,16 +265,36 @@ class TestOvertakePlan(unittest.TestCase):
           leftBlinker=False,rightBlinker=False,leftLaneLine=10,rightLaneLine=10,oemLaneChangeStateValid=False,
           leftOemLaneChangeReady=True,rightOemLaneChangeReady=True,leftBlindspot=False,rightBlindspot=False)
     sm=SM(carState=cs,carControl=NS(latActive=True,longActive=True),
-          carrotMan=NS(naviHighway=True,xTurnInfo=-1,xDistToTurn=-1),
+          carrotMan=NS(roadLimitSpeedRaw=110,roadLimitSpeedValid=True,naviHighway=True,xTurnInfo=-1,xDistToTurn=-1),
           modelV2=NS(meta=NS(laneWidthLeft=3.5,laneWidthRight=3.5,laneChangeCrossed=False,
                             laneChangeState=NS(raw=0),laneChangeDirection=NS(raw=0)),laneLineProbs=[.95]*4),
-          radarState=NS(leadsRight=[],leadsCenter=[],frontRadarLeadsRight=[],leadOne=NS(radarTrackId=40,vLead=24.,dRel=55.,present=True,radar=True,modelProb=.99)))
+          radarState=NS(leadsRight=[],leadsLeft=[],leadsCenter=[],frontRadarLeadsLeft=[],frontRadarLeadsRight=[],leadOne=NS(radarTrackId=40,vLead=24.,dRel=55.,present=True,radar=True,modelProb=.99)))
     result=env['observe_overtake_plan'](sm,self.h,-1.)
     self.assertEqual(result,10.)
     self.assertEqual(self.h.phase,'blocked')
     self.assertFalse(events[0]['actuation_connected'])
     self.assertIn('signal_path_unverified',events[0]['blocked_by'])
     self.assertIn('rear_permission_unavailable',events[0]['blocked_by'])
+
+    traffic_spec=importlib.util.spec_from_file_location('advice_fixture',Path(__file__).parents[1]/'lib/overtake_traffic.py')
+    traffic_module=importlib.util.module_from_spec(traffic_spec)
+    sys.modules[traffic_spec.name]=traffic_module
+    traffic_spec.loader.exec_module(traffic_module)
+    env['OvertakeAdviceConfirmation']=traffic_module.OvertakeAdviceConfirmation
+    del self.h.advice_confirmation
+    env['assess_traffic']=lambda **kw:NS(eligible=True,reason='both_adjacent_lanes_faster',ahead_gap=0.,left_faster=True,right_faster=True)
+    cs.oemLaneChangeStateValid=True
+    for i in range(1,70):
+      sm.logMonoTime={key:int((10.+i*.05)*1e9) for key in SM.logMonoTime}
+      env['observe_overtake_plan'](sm,self.h,10.)
+    self.assertTrue(self.h.pass_advised)
+    self.assertTrue(self.h.decision().pass_advised)
+    self.assertFalse(self.h.decision().actuation_connected)
+    self.assertEqual(self.h.phase,'blocked')
+    cs.steeringPressed=True
+    sm.logMonoTime={key:int(13.5e9) for key in SM.logMonoTime}
+    env['observe_overtake_plan'](sm,self.h,10.)
+    self.assertFalse(self.h.pass_advised)
 
   def test_production_adapter_cannot_claim_missing_capabilities_or_crossing(self):
     path=Path(__file__).parents[1]/'plannerd.py'

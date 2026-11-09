@@ -151,6 +151,8 @@ class CarrotServ:
     self.vpPosPointLon = 0.0
     self.roadcate = 8
     self.navi_highway_stamp = None
+    self.road_limit_raw = 0
+    self.road_limit_stamp = None
 
     self.nPosSpeed = 0.0
     self.nPosAngle = 0.0
@@ -892,6 +894,8 @@ class CarrotServ:
         if not self.is_metric:
           road_limit_speed *= CV.MPH_TO_KPH
         self.nRoadLimitSpeed = road_limit_speed
+        self.road_limit_raw = road_limit_speed
+        self.road_limit_stamp = time.monotonic()
     if "kisawazealert" in data:
       pass
     if "kisawazeendalert" in data:
@@ -1012,6 +1016,10 @@ class CarrotServ:
       self.totalDistance = distanceTraveled
       if CS.roadLimitSpeed > 0 and self.active_carrot <= 1:
         self.nRoadLimitSpeed = CS.roadLimitSpeed
+        self.road_limit_raw = CS.roadLimitSpeed
+        self.road_limit_stamp = (time.monotonic() if CS.canValid and
+                                 sm.all_checks(['carState']) and
+                                 0 <= time.monotonic()-sm.recv_time['carState'] < .2 else None)
         road_speed_limit_offset = self.autoRoadSpeedLimitOffset
         if not self.is_metric:
           road_speed_limit_offset *= CV.KPH_TO_MPH
@@ -1372,6 +1380,10 @@ class CarrotServ:
     msg.valid = True
     msg.carrotMan.activeCarrot = self.active_carrot
     msg.carrotMan.nRoadLimitSpeed = int(self.nRoadLimitSpeed)
+    msg.carrotMan.roadLimitSpeedRaw = int(self.road_limit_raw)
+    limit_stamp = self.road_limit_stamp
+    msg.carrotMan.roadLimitSpeedValid = bool(limit_stamp is not None and
+                                           0 <= tbt_now-limit_stamp < 2.5 and 0 < self.road_limit_raw <= 140)
     highway_stamp = self.navi_highway_stamp
     msg.carrotMan.naviHighway = highway_stamp is not None and 0 <= tbt_now - highway_stamp < 2.5
     msg.carrotMan.remote = remote_ip
@@ -1517,6 +1529,9 @@ class CarrotServ:
       self.active_sdi_count = self.active_sdi_count_max
       ### roadLimitSpeed
       nRoadLimitSpeed = int(json.get("nRoadLimitSpeed", 20))
+      raw_limit = (nRoadLimitSpeed-20)/10 if nRoadLimitSpeed > 200 else nRoadLimitSpeed
+      self.road_limit_raw = raw_limit if 0 < raw_limit <= 140 else 0
+      self.road_limit_stamp = now if self.road_limit_raw else None
       if nRoadLimitSpeed > 0:
         if nRoadLimitSpeed > 200:
           nRoadLimitSpeed = (nRoadLimitSpeed - 20) / 10
