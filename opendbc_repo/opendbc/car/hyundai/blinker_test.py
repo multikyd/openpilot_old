@@ -106,7 +106,7 @@ class BlinkerTestSender:
     identity = req.get("id")
     if self.tbt:
       waiting = (req.get("stationary") is True and cs.standstill and abs(cs.vEgo) < .05 and
-                 not cs.gasPressed and (cs.brakePressed or cc.longActive))
+                 not cs.gasPressed)
       moving = moving_speed_ok(cs)
       permitted = (cs.canValid and cs.blinkerStalkSupported and cs.blinkerStalkValid and
                    str(cs.gearShifter) == "drive" and not cs.doorOpen and not cs.seatbeltUnlatched and

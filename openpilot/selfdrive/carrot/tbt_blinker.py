@@ -42,7 +42,7 @@ class TbtBlinker:
       self.centered_since = None
       self.last_center_sample = None
 
-  def update(self, now, code, distance, age, cs, enabled, *, held=False, next_road_width=0, lane_width=0.):
+  def update(self, now, code, distance, age, cs, enabled, *, next_road_width=0, lane_width=0.):
     valid_turn = (code in (12, 13, 16, 19) and math.isfinite(distance) and 0 <= age <= 2.)
     direction = "left" if code in (12, 16) else "right"
     if valid_turn:
@@ -98,14 +98,14 @@ class TbtBlinker:
       return
 
     speed = cs.vEgo
-    waiting = cs.standstill and abs(speed) < .05 and held and not cs.gasPressed
+    waiting = cs.standstill and abs(speed) < .05 and not cs.gasPressed
     moving = moving_speed_ok(cs)
     if not math.isfinite(speed) or not (waiting or moving):
       self.stop(now)
       return
     self.stationary_wait = self.stationary_wait or waiting
 
-    stopped_threshold = 20. + min(10., max(0., 2. * (next_road_width - 5.)))
+    stopped_threshold = 40. + min(20., max(0., 4. * (next_road_width - 5.)))
     # Reserve time for the turn inside the moving request deadline.
     approach_seconds = FOLLOWING_TURN_APPROACH_SECONDS if self.close_following_turn else TURN_APPROACH_SECONDS
     threshold = stopped_threshold if waiting else min(moving_threshold, abs(speed) * approach_seconds)

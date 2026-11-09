@@ -1369,8 +1369,6 @@ class CarrotServ:
                               tbt_now-self.tbt_blinker_stamp, CS,
                               self.params.get_bool("TbtBlinkerExperiment") and
                               tbt_fresh('carState') and tbt_fresh('selfdriveState'),
-                              held=bool(CS is not None and (CS.brakePressed or
-                                        (tbt_fresh('carControl') and sm['carControl'].longActive))),
                               next_road_width=self.nTBTNextRoadWidth, lane_width=lane_width)
     except OSError:
       # Existing requests expire if IPC cannot be refreshed.

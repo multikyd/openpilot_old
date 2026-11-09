@@ -96,6 +96,23 @@ int main(void) {
   CANPacket_t stationary = command(0U, 3U);
   CHECK(safety_tx_hook(&stationary));
 
+  // SCC can hold the car without the driver brake or OP controls_allowed.
+  // Such a stop must select the waiting deadline, not the moving 10s cap.
+  reset(1024U | 2048U);
+  feed(0U, 0U, false, false, 0U);
+  set_controls_allowed(false);
+  stationary = command(0U, 3U);
+  CHECK(safety_tx_hook(&stationary));
+  CHECK(hyundai_canfd_tbt_wait_seen);
+  set_timer(timer_cnt + 11000000U);
+  feed(0U, 0U, false, false, 0U);
+  set_controls_allowed(false);
+  CHECK(safety_tx_hook(&stationary));
+  set_timer(timer_cnt + 120200000U);
+  feed(0U, 0U, false, false, 0U);
+  set_controls_allowed(false);
+  CHECK(!safety_tx_hook(&stationary));
+
   // Moving TBT requires a fresh neutral stalk.
   reset(1024U | 2048U);
   feed(0U, 13U, false, false, 0U);
