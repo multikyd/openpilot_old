@@ -59,10 +59,22 @@ def observe_overtake_plan(sm, plan, last_logged):
               cs.leftBlinkerStalk or cs.rightBlinkerStalk or (cs.leftBlinker and cs.rightBlinker))
   # These are geometrical candidates, not a claim that an unverified white
   # marking is legally crossable. Actuation prerequisites below remain false.
-  left_lane = (10 <= cs.leftLaneLine < 20 and md.meta.laneWidthLeft >= 2.8 and
+  left_lane = (cs.leftLaneLine == 10 and md.meta.laneWidthLeft >= 2.8 and
                len(md.laneLineProbs) >= 4 and md.laneLineProbs[0] >= .7)
-  right_lane = (10 <= cs.rightLaneLine < 20 and md.meta.laneWidthRight >= 2.8 and
+  right_lane = (cs.rightLaneLine == 10 and md.meta.laneWidthRight >= 2.8 and
                 len(md.laneLineProbs) >= 4 and md.laneLineProbs[3] >= .7)
+  change_running, change_finishing, change_completed = plan.lane_change_observation.update(
+    now, int(md.meta.laneChangeState.raw), int(md.meta.laneChangeDirection.raw),
+    bool(md.meta.laneChangeCrossed), fresh)
+  original_ahead = False
+  original_rear = None
+  for vehicle in (lead, *sm['radarState'].leadsRight):
+    if (vehicle.present and vehicle.radar and vehicle.radarTrackId == plan.target_id and
+        plan.target_id >= 0 and math.isfinite(vehicle.dRel)):
+      original_ahead |= vehicle.dRel >= 0.
+      if vehicle.dRel < 0.:
+        original_rear = vehicle
+
   x = OvertakeInput(
     now=now, enabled=bool(cc.latActive and cc.longActive and cs.canValid),
     highway=bool(nav.naviHighway), fresh=fresh, route_clear=not near_route,
@@ -73,10 +85,14 @@ def observe_overtake_plan(sm, plan, last_logged):
     left_lane_valid=left_lane, right_lane_valid=right_lane,
     left_bsm=bool(cs.leftBlindspot), right_bsm=bool(cs.rightBlindspot),
     left_lamp=bool(cs.leftBlinker), right_lamp=bool(cs.rightBlinker),
-    # Do not repurpose the 3-second high-speed manual blinker experiment.
-    signal_verified=False, signal_max_seconds=3.,
-    # Current side-lead messages cannot identify the original vehicle behind us.
-    rear_tracking_verified=False, rear_track_id=-1, change_completed=0)
+    # Signal-path capability is separate from OEM traffic permission.
+    signal_verified=False, signal_max_seconds=0.,
+    oem_permission_valid=bool(cs.oemLaneChangeStateValid), rear_tracking_verified=False,
+    original_ahead_right=original_ahead,
+    rear_track_id=int(original_rear.radarTrackId) if original_rear is not None else -1,
+    rear_gap=-float(original_rear.dRel) if original_rear is not None else 0.,
+    change_running=change_running, change_finishing=change_finishing,
+    change_completed=change_completed)
   result = plan.update(x)
   candidate = (x.highway and x.speed >= 70./3.6 and x.lead_reliable and
                x.lead_speed <= x.set_speed-10./3.6)
@@ -86,6 +102,10 @@ def observe_overtake_plan(sm, plan, last_logged):
                    left_green=x.left_ready, right_green=x.right_ready,
                    left_geometry=left_lane, right_geometry=right_lane,
                    left_bsm=x.left_bsm, right_bsm=x.right_bsm,
+                   oem_permission_valid=x.oem_permission_valid, signal_direction=result.signal_direction,
+                   change_running=change_running, change_finishing=change_finishing,
+                   change_completed=change_completed, original_ahead_right=original_ahead,
+                   original_rear_track=x.rear_track_id, original_rear_gap_m=x.rear_gap,
                    original_lead=x.lead_id, lead_distance_m=x.lead_distance,
                    speed_kph=x.speed*3.6, setting_kph=x.set_speed*3.6)
     return now

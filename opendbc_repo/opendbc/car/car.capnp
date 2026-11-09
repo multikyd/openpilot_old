@@ -263,6 +263,7 @@ struct CarState {
   rightBlinkerStalk @92 :Bool;
   leftOemLaneChangeReady @93 :Bool; # OEM display state
   rightOemLaneChangeReady @94 :Bool;
+  oemLaneChangeStateValid @95 :Bool;
 
   struct TPMS {
     unit @0 :Int8;

@@ -1,7 +1,7 @@
 """Pure overtake planning state machine. No CAN, steering or speed outputs.
 
-Production observation currently supplies unverified actuation/rear-tracking
-capabilities as False. A green OEM indication cannot override those prerequisites.
+Fresh OEM permissions can supply the surrounding-traffic permission input.
+The original vehicle's clearance and the signal path have separate prerequisites.
 """
 from dataclasses import dataclass
 import math
@@ -16,6 +16,7 @@ class OvertakeInput:
   signal_verified: bool = False
   signal_max_seconds: float = 0.
   rear_tracking_verified: bool = False
+  oem_permission_valid: bool = False
   driver_override: bool = False
   route_clear: bool = False
   speed: float = 0.
@@ -36,6 +37,8 @@ class OvertakeInput:
   change_completed: int = 0  # verified crossing AND settled in the adjacent lane
   rear_track_id: int = -1
   rear_gap: float = 0.
+  original_ahead_right: bool = False
+  change_finishing: int = 0
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,7 @@ class OvertakeDecision:
   blocked_by: tuple = ()
   # An intent is never an actuation command, even in offline scenarios.
   actuation_connected: bool = False
+  signal_direction: int = 0
 
 
 class OvertakePlan:
@@ -65,17 +69,21 @@ class OvertakePlan:
     self.original_speed = 0.
     self.running_seen = False
     self.reason = "waiting"
+    self.finishing_seen = False
+    self.lane_change_observation = LaneChangeObservation()
 
   def decision(self, reason=None, blocked=()):
     direction = -1 if self.phase in ("signal_left","enter_left") else 1 if self.phase in ("signal_right","return_right") else 0
     return OvertakeDecision(self.phase, reason or self.reason, direction,
                             self.phase in ("enter_left","return_right") and not self.running_seen,
-                            self.original_speed, tuple(blocked))
+                            self.original_speed, tuple(blocked),
+                            signal_direction=0 if self.finishing_seen else direction)
 
   def transition(self, phase, now, reason):
     self.phase, self.since, self.reason = phase, now, reason
     self.lamp = 0.
     self.running_seen = False
+    self.finishing_seen = False
 
   def cancel(self, now, reason):
     self.transition("cooldown", now, reason)
@@ -91,9 +99,9 @@ class OvertakePlan:
     blockers = []
     for ok, reason in ((x.enabled,"not_engaged"),(x.highway,"not_highway"),
                        (x.fresh,"stale_input"),(not x.driver_override,"driver_override"),
-                       (x.route_clear,"route_conflict"),(x.signal_verified and x.signal_max_seconds >= self.CHANGE_SECONDS,
+                       (x.route_clear,"route_conflict"),(x.signal_verified and x.signal_max_seconds >= self.SIGNAL_SECONDS + self.CHANGE_SECONDS,
                                                         "signal_path_unverified"),
-                       (x.rear_tracking_verified,"rear_tracking_unverified"),
+                       (x.rear_tracking_verified or x.oem_permission_valid,"rear_permission_unavailable"),
                        (70./3.6 <= x.speed <= 120./3.6,"speed_outside_envelope"),
                        (x.speed <= x.set_speed+5./3.6,"speed_above_setting")):
       if not ok:
@@ -123,8 +131,8 @@ class OvertakePlan:
     right_ok = x.right_ready and x.right_lane_valid and not x.right_bsm
     self.left_green = self.left_green+dt if left_ok else 0.
     self.right_green = self.right_green+dt if right_ok else 0.
-    passed = (self.target_id >= 0 and x.rear_track_id == self.target_id and
-              x.rear_gap >= max(15.,1.2*x.speed))
+    passed = (self.target_id >= 0 and not x.original_ahead_right and
+              x.rear_track_id == self.target_id and x.rear_gap >= max(15.,1.2*x.speed))
     self.rear_clear = self.rear_clear+dt if passed else 0.
 
     if self.phase == "idle":
@@ -152,6 +160,7 @@ class OvertakePlan:
     elif self.phase in ("enter_left","return_right"):
       side = -1 if self.phase == "enter_left" else 1
       self.running_seen |= x.change_running == side
+      self.finishing_seen |= self.running_seen and x.change_finishing == side
       if x.change_running not in (0,side):
         return self.cancel(x.now,"unexpected_change_direction")
       if (x.left_bsm if side < 0 else x.right_bsm):
@@ -174,3 +183,33 @@ class OvertakePlan:
       if x.now-self.since >= 2. and self.rear_clear >= 1. and self.right_green >= 1.:
         self.transition("signal_right",x.now,"original_vehicle_cleared")
     return self.decision()
+
+
+class LaneChangeObservation:
+  """Confirm the running direction, observed crossing and return to lane keeping."""
+  def __init__(self):
+    self.previous = None
+    self.direction = 0
+    self.crossed = self.finishing = False
+
+  def update(self, now, state, direction, crossed, fresh):
+    if not fresh or not math.isfinite(now):
+      self.__init__()
+      return 0, 0, 0
+    if self.previous is not None and now == self.previous:
+      return 0, 0, 0
+    if self.previous is not None and not 0. < now - self.previous <= .2:
+      self.__init__()
+    self.previous = now
+    side = -1 if direction == 1 else 1 if direction == 2 else 0
+    if state in (2, 3, 4) and side:
+      if self.direction != side:
+        self.direction = side
+        self.crossed = self.finishing = False
+      self.crossed |= crossed
+      self.finishing |= state == 3 and self.crossed
+      return side, side if self.finishing else 0, 0
+    completed = self.direction if state == 0 and self.finishing else 0
+    self.direction = 0
+    self.crossed = self.finishing = False
+    return 0, 0, completed

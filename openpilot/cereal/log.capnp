@@ -1191,6 +1191,7 @@ struct ModelDataV2 {
     laneChangeProb @15 :Float32;
     desireLog @16 : Text;
     modelTurnSpeed @17 :Float32;
+    laneChangeCrossed @18 :Bool;
 
 
     deprecated :group {
