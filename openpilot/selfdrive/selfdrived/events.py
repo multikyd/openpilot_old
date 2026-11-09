@@ -1053,7 +1053,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
                         Priority.LOW, VisualAlert.none, AudibleAlert.overtakeReturn, 2.5),
   },
   EventName.overtakeStart: {
-    ET.PERMANENT: Alert("OVERTAKING", "", AlertStatus.normal, AlertSize.small,
+    ET.PERMANENT: Alert("BLINKER TEST", "", AlertStatus.normal, AlertSize.small,
                         Priority.LOW, VisualAlert.none, AudibleAlert.overtakeStart, 2.5),
   },
   EventName.tbtBlinkerLeft: {

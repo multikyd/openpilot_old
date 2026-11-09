@@ -1506,8 +1506,18 @@
     "param": "MovingBlinkerRoadTest",
     "value_type": "BOOL",
     "description": {
-      "ko": "폐쇄 코스에서 아이오닉 5 PE 앱 버튼 시험에만 적용됩니다. TBT 실험 설정과 함께 켜고 C4를 재시작하세요.",
-      "en": "Closed-course Ioniq 5 PE app button test only. Enable with the TBT experiment and restart C4."
+      "ko": "아이오닉 5 PE의 주행 중 앱 버튼 시험 및 별도 설정으로 켜는 추월 후보 깜빡이 시험의 송신을 허용합니다. TBT 실험 설정과 함께 켜고 C4를 재시작하세요.",
+      "en": "Allows moving app button tests and the separately enabled overtake-candidate signal test on Ioniq 5 PE. Enable with the TBT experiment and restart C4."
+    }
+  },
+  {
+    "group": "Curv/Safety/Nav",
+    "title": { "ko": "추월 후보 깜빡이 시험", "en": "Overtake Candidate Signal Test" },
+    "param": "OvertakeBlinkerSignalTest",
+    "value_type": "BOOL",
+    "description": {
+      "ko": "기본 OFF. 고속도로 추월 후보 조건이 확인되면 왼쪽 깜빡이를 최대 3초 켭니다. 자동 차선변경이나 추월 가속은 하지 않습니다. 실제 점등 확인 후 BLINKER TEST와 시작 음성이 나옵니다. TBT 자동 방향지시등(실험)과 주행 중 방향지시등 시험을 함께 켜고, 처음에는 C4를 재시작하세요. 이후 이 설정은 약 0.5초마다 반영됩니다. 핸들·페달·방향지시등 레버 개입 시 중단되며 같은 앞차에는 반복하지 않습니다.",
+      "en": "Default OFF. Pulses the left signal for up to 3 seconds after highway overtake-candidate confirmation. No automatic lane change or passing acceleration. Confirmed lamp feedback triggers BLINKER TEST and the start voice. Enable TBT Auto Turn Signals and Moving Turn Signal Road Test, then restart C4 initially. This switch is subsequently checked every 0.5 seconds. Steering, pedal or stalk intervention cancels the test; the same lead is not tested repeatedly."
     }
   },
   {

@@ -11,6 +11,7 @@ TBT_REQUEST = Path("/dev/shm/kisa_tbt_blinker_request.json")
 TBT_MAX_SECONDS = 10.0
 TBT_WAIT_MAX_SECONDS = 120.0
 REQUEST = Path("/dev/shm/kisa_blinker_request.json")
+OVERTAKE_TEST_REQUEST = Path("/dev/shm/kisa_overtake_signal_test.json")
 STATUS = Path("/dev/shm/kisa_blinker_status.json")
 CANCEL = Path("/dev/shm/kisa_blinker_cancel.json")
 LEASE_SECONDS = 0.65

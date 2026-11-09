@@ -9,7 +9,7 @@ from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR, CAN_GEARS
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.hyundai.steering_diagnostics import SteeringDiagnostics
-from opendbc.car.hyundai.blinker_test import BlinkerTestSender, MOVING_ROAD_SAFETY_FLAG, SAFETY_FLAG, TBT_REQUEST, TBT_SAFETY_FLAG
+from opendbc.car.hyundai.blinker_test import BlinkerTestSender, MOVING_ROAD_SAFETY_FLAG, OVERTAKE_TEST_REQUEST, SAFETY_FLAG, TBT_REQUEST, TBT_SAFETY_FLAG
 from openpilot.common.swaglog import cloudlog
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -122,6 +122,8 @@ class CarController(CarControllerBase):
     moving_road_test = any(int(c.safetyParam) & MOVING_ROAD_SAFETY_FLAG for c in CP.safetyConfigs)
     self.blinker_test = BlinkerTestSender(allow_moving=tbt_blinker, moving_road_test=moving_road_test) if stationary_blinker else None
     self.tbt_blinker = BlinkerTestSender(request=TBT_REQUEST, tbt=True) if tbt_blinker and stationary_blinker else None
+    self.overtake_signal_test = (BlinkerTestSender(request=OVERTAKE_TEST_REQUEST, allow_moving=True, moving_road_test=True)
+                                 if moving_road_test and tbt_blinker and stationary_blinker else None)
     self.spas_sender = self.blinker_test
 
     self.last_spas_poll_nanos = -20_000_000
@@ -396,8 +398,11 @@ class CarController(CarControllerBase):
         # eligible app request priority when choosing the next owner.
         if not self.spas_sender.clear_frames:
           sender = self.blinker_test
-          if self.tbt_blinker is not None and not sender.has_request(now):
-            sender = self.tbt_blinker
+          if not sender.has_request(now):
+            if self.overtake_signal_test is not None and self.overtake_signal_test.has_request(now):
+              sender = self.overtake_signal_test
+            elif self.tbt_blinker is not None:
+              sender = self.tbt_blinker
           if sender is not self.spas_sender:
             sender.last_status = -1.0
             self.spas_sender = sender

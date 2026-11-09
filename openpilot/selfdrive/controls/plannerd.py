@@ -10,6 +10,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
 from openpilot.selfdrive.controls.lib.overtake_traffic import assess_traffic, OvertakeAdviceConfirmation
 from openpilot.selfdrive.controls.lib.overtake_plan import OvertakePlan, OvertakeInput, observe_original_vehicle
+from openpilot.selfdrive.controls.lib.overtake_signal_test import OvertakeSignalTest
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 
 from openpilot.selfdrive.controls.lib.lateral_planner import LateralPlanner
@@ -127,6 +128,36 @@ def observe_overtake_plan(sm, plan, last_logged):
   return last_logged
 
 
+def update_overtake_signal_test(sm, test, enabled, supported, candidate):
+  now = sm.logMonoTime['modelV2']*1e-9
+  cs, cc, nav = sm['carState'], sm['carControl'], sm['carrotMan']
+  services = ('carState', 'carControl', 'carrotMan', 'radarState', 'modelV2')
+  fresh = sm.all_checks(services) and all(0. <= now-sm.logMonoTime[k]*1e-9 <= .3 for k in services)
+  near_route = nav.xTurnInfo >= 0 and 0. <= nav.xDistToTurn <= max(500., 20.*cs.vEgo)
+  eligible = (fresh and nav.naviHighway and not near_route and cs.canValid and
+              cc.latActive and cc.longActive and 70./3.6 <= cs.vEgo <= 130./3.6 and
+              str(cs.gearShifter) == 'drive' and not cs.doorOpen and not cs.seatbeltUnlatched and
+              cs.blinkerStalkSupported and cs.blinkerStalkValid and
+              not (cs.leftBlinkerStalk or cs.rightBlinkerStalk or cs.steeringPressed or cs.gasPressed or cs.brakePressed) and
+              cs.leftLaneLine == 10 and not cs.leftBlindspot and not cs.rightBlinker and
+              sm['modelV2'].meta.laneChangeState == 'off')
+  before = (test.reason, test.identity)
+  try:
+    announce = test.update(now, enabled=enabled, supported=supported, eligible=eligible,
+                           candidate=candidate, lead_id=int(sm['radarState'].leadOne.radarTrackId),
+                           lamps_off=not (cs.leftBlinker or cs.rightBlinker))
+  except OSError:
+    # A failed heartbeat expires at card; do not let test I/O stop planning.
+    test.identity = None
+    test.cooldown = now+60.
+    test.reason = 'io_error'
+    announce = False
+  if (test.reason, test.identity) != before:
+    cloudlog.event('overtake_signal_test', reason=test.reason, request_id=test.identity,
+                   lamp_confirmed=test.announced, steering_requested=False, speed_requested=False)
+  return announce
+
+
 def main():
   # Keep planning off CPU5, which runs the higher-priority UI and display IRQs.
   # CPU4 control loops retain CTRL_HIGH priority and preempt this CTRL_LOW task.
@@ -151,6 +182,10 @@ def main():
   last_overtake_log = -1.
   overtake_plan = OvertakePlan()
   last_overtake_plan_log = -1.
+  signal_test = OvertakeSignalTest()
+  signal_test_supported = observe_overtake and any(int(c.safetyParam) & 7168 == 7168 for c in CP.safetyConfigs)
+  signal_test_enabled = False
+  signal_test_param_time = -math.inf
 
   while True:
     sm.update()
@@ -161,6 +196,15 @@ def main():
         last_overtake_log = log_highway_overtake_candidate(sm, last_overtake_log)
         last_overtake_plan_log = observe_overtake_plan(sm, overtake_plan, last_overtake_plan_log)
       longitudinal_planner.update(sm, carrot, overtake_plan.decision() if observe_overtake else None)
+      signal_now = sm.logMonoTime['modelV2']*1e-9
+      if signal_now-signal_test_param_time >= .5:
+        signal_test_enabled = params.get_bool('OvertakeBlinkerSignalTest')
+        signal_test_param_time = signal_now
+      # Lamp feedback may announce a signal-only test. It never connects the
+      # offline plan's steering/speed outputs or changes the cruise target.
+      signal_announce = update_overtake_signal_test(
+        sm, signal_test, signal_test_enabled, signal_test_supported, overtake_plan.pass_advised)
+      longitudinal_planner.overtake_announce |= signal_announce
       longitudinal_planner.publish(sm, pm, carrot)
 
       ldw.update(sm.frame, sm['modelV2'], sm['carState'], sm['carControl'])
