@@ -6,6 +6,7 @@ MAX_RECORDS = 256
 SMOOTH_PEAK = 1.5  # m/s^2, gravity-projected, high-pass acceleration
 ROUGH_PEAK = 3.0
 UNKNOWN_PEAK = 3.5
+MAX_LEARNED_SPEED = 40  # km/h; only repeated eligible smooth passes raise a target
 
 
 def offset(lat, lon, heading, meters):
@@ -36,7 +37,7 @@ class BumpMemory:
             continue
           clean = dict(r)
           clean.update(zip(('lat', 'lon', 'heading', 'target'), vals))
-          clean['target'] = max(10, min(50, clean['target']))
+          clean['target'] = max(10, min(MAX_LEARNED_SPEED, clean['target']))
           clean['passes'] = max(0, int(r.get('passes', 0)))
           clean['smooth'] = max(0, min(2, int(r.get('smooth', 0))))
           clean['confirmed'] = bool(r.get('confirmed', False))
@@ -199,7 +200,7 @@ class BumpMemory:
     elif peak < SMOOTH_PEAK and eligible and not manual and abs(speed-old) <= 2:
       record['smooth'] += 1
       if record['smooth'] >= 3:
-        record['target'] = min(old + 5, self.base + self.raise_limit, record['manual_cap'], 50)
+        record['target'] = min(old + 5, self.base + self.raise_limit, record['manual_cap'], MAX_LEARNED_SPEED)
         record['smooth'] = 0
       self._notify(now, f"부드러움 · 다음 {record['target']:.0f}")
     else:
@@ -284,9 +285,10 @@ class BumpMemory:
       suspended = nearest.get('clear_passes',0)>=2
       if suspended and not live_match:
         return None
-      # Live navigation still gets the normal bump target even when a learned
-      # local cap has been retired after repeated clear passes.
-      target = self.base if suspended else min(nearest['target'], self.base + self.raise_limit, nearest['manual_cap'])
+      # Retirement suppresses standalone local caps, not the learned target of
+      # a bump that navigation still reports. Otherwise smooth passes reset its
+      # applied target to base and can never progress from 35 to 40 km/h.
+      target = min(nearest['target'], self.base + self.raise_limit, nearest['manual_cap'], MAX_LEARNED_SPEED)
       notify = nearest.get('impact_learned', False) or abs(target - self.base) >= 0.5
       if notify and 0 < nearest_d < 120 and now-self.sound_last >= 15 and getattr(self, '_announced', None) != id(nearest):
         self.sound_seq += 1

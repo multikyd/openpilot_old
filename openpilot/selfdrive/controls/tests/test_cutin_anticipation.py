@@ -97,7 +97,7 @@ class TestCutInAnticipation(unittest.TestCase):
       t = 2.+i*.05
       value = helper.update(NS(leadsLeft=[], leadsRight=[]), model, 20., 1.6, 0., t, t, True)
       if value is not None:
-        self.assertLessEqual(value-previous, .35*.05+1e-8)
+        self.assertLessEqual(value-previous, .8*.05+1e-8)
         previous = value
     self.assertIsNone(value)
 
@@ -145,7 +145,7 @@ class TestCutInAnticipation(unittest.TestCase):
       self.assertEqual(helper.stage,'recover')
     recovered=helper.update(empty,model,20.,1.6,0.,2.4,2.4,True)
     self.assertGreater(recovered,before)
-    self.assertLessEqual(recovered-before,.35*.1+1e-8)
+    self.assertLessEqual(recovered-before,.8*.1+1e-8)
     self.assertIsNone(helper.update(empty,model,20.,1.6,0.,2.45,2.45,False))
 
   def test_stale_data_clears_even_during_recovery_confirmation(self):
@@ -238,6 +238,57 @@ class TestCutInAnticipation(unittest.TestCase):
     helper.update(NS(leadsLeft=[], leadsRight=[lead]), model, 16., .4, 0., 1.2, 1.2, True)
     self.assertIsNone(helper.track_id)
     self.assertNotIn(205, helper.history)
+
+  def test_nearly_stationary_roadside_track_needs_actual_intrusion(self):
+    _, trace = self.simulate(speed=12.,start=-3.2,lateral=.3,relative=-11.,distance=18.,duration=.8)
+    self.assertTrue(all(x is None for x in trace))
+
+  def test_ego_turn_sweep_is_not_stationary_cut_in(self):
+    helper,model=CutInAnticipation(),fixture()
+    for i in range(20):
+      t=i*.05;distance=20.-12.*t;y=-2.5+.72*t
+      lead=NS(present=True,radar=True,radarTrackId=1,dRel=distance,yRel=y,dPath=y,
+              vRel=-12.,vLead=0.,vLat=.72)
+      self.assertIsNone(helper.update(NS(leadsLeft=[],leadsRight=[lead]),model,12.,1.,.003,t,t,True))
+
+  def test_close_slow_vehicle_on_curve_still_responds_with_vision_match(self):
+    helper,model=CutInAnticipation(),fixture();trace=[]
+    for i in range(16):
+      t=i*.05;distance=9.-7.*t;y=-2.3+.7*t
+      lead=NS(present=True,radar=True,radarTrackId=1,dRel=distance,yRel=y,dPath=y,
+              vRel=-7.,vLead=1.,vLat=.7)
+      model.leadsV3=[NS(x=[distance+1.52],y=[-y],prob=.9)]
+      trace.append(helper.update(NS(leadsLeft=[],leadsRight=[lead]),model,8.,.4,.003,t,t,True))
+    self.assertTrue(any(v is not None for v in trace[:7]))
+    self.assertLess(min(v for v in trace if v is not None),0.)
+
+  def test_close_slow_vehicle_on_straight_needs_no_vision_gate(self):
+    _,trace=self.simulate(speed=8.,start=-2.3,lateral=.7,relative=-7.,distance=9.,duration=.75,normal_accel=.4)
+    self.assertTrue(any(v is not None for v in trace[:7]))
+    self.assertLess(min(v for v in trace if v is not None),0.)
+
+  def test_unrelated_new_candidate_does_not_inherit_old_braking(self):
+    helper,trace=self.simulate(speed=16.,start=-3.2,lateral=.6,relative=-1.5,distance=8.,duration=1.2,normal_accel=.4)
+    self.assertLess(trace[-1],0.)
+    for i in range(12):
+      t=1.2+i*.05;y=2.8-.6*i*.05
+      lead=NS(present=True,radar=True,radarTrackId=999,dRel=16.,yRel=y,dPath=y,
+              vRel=0.,vLead=16.,vLat=-.6)
+      cap=helper.update(NS(leadsLeft=[lead],leadsRight=[]),fixture(),16.,.4,0.,t,t,True)
+      if helper.track_id==999:
+        self.assertGreaterEqual(cap,0.)
+    self.assertEqual(helper.track_id,999)
+
+  def test_position_continuous_id_change_retains_confirmed_restriction(self):
+    helper,trace=self.simulate(speed=16.,start=-3.2,lateral=.6,relative=-1.5,distance=8.,duration=1.2,normal_accel=.4)
+    helper.history[999]=list(helper.history[201])
+    t=1.2;y=-3.2+.6*t
+    lead=NS(present=True,radar=True,radarTrackId=999,dRel=8.-1.5*t,yRel=y,dPath=y,
+            vRel=-1.5,vLead=14.5,vLat=.6)
+    cap=helper.update(NS(leadsLeft=[],leadsRight=[lead]),fixture(),16.,.4,0.,t,t,True)
+    self.assertEqual(helper.track_id,999)
+    self.assertLess(cap,0.)
+    self.assertLessEqual(cap,trace[-1])
 
 
 if __name__ == '__main__':

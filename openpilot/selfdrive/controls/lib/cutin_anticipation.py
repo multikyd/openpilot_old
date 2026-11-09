@@ -20,6 +20,7 @@ class CutInAnticipation:
     self.confirmed_tracks = {}
     self.release_since = None
     self.imminent_until = -math.inf
+    self.last_target = None
 
   def update(self, radar, model, speed, normal_accel, curvature, sample_time, now, enabled, current_accel=None):
     values = (speed, normal_accel, curvature, sample_time, now)
@@ -67,7 +68,7 @@ class CutInAnticipation:
       return None
 
     horizon = float(np.interp(speed, [3., 15., 30.], [1.5, 2., 2.5]))
-    target, chosen, stage = None, None, 'off'
+    target, chosen, stage, chosen_state = None, None, 'off', None
     seen = set()
     self.history = {key: h for key, h in self.history.items() if now-h[-1][0] < .3}
     self.confirmed_tracks = {key: t for key, t in self.confirmed_tracks.items() if now-t <= .5}
@@ -107,7 +108,14 @@ class CutInAnticipation:
             abs(lead.dRel-h[-1][2]) > 2.+abs(lead.vRel)*elapsed or
             abs(offset-h[-1][1]) > .5+1.8*elapsed):
           h = []
-      h.append((sample_time, offset, lead.dRel))
+      # Remove apparent lateral motion caused by ego yaw for nearly stationary
+      # tracks. On a bend a roadside reflector can sweep inward without moving.
+      motion = 0.
+      if h:
+        yaw = -curvature*speed*(sample_time-h[-1][0])
+        stationary_y = h[-1][4]*math.cos(yaw)-h[-1][2]*math.sin(yaw)
+        motion = h[-1][3]+lead.yRel-stationary_y
+      h.append((sample_time, offset, lead.dRel, motion, lead.yRel))
       h = [p for p in h if sample_time-p[0] <= .8]
       self.history[key] = h
       span = sample_time-h[0][0]
@@ -118,6 +126,29 @@ class CutInAnticipation:
       recent_span = sample_time-recent[0][0]
       movement = abs(recent[0][1])-abs(offset)
       recent_inward = movement/recent_span if recent_span > 0. else 0.
+      near_stationary = lead.vLead < max(3., speed*.15)
+      if near_stationary:
+        physical_movement = -math.copysign(1., offset)*(motion-recent[0][3])
+        physical_inward = physical_movement/recent_span if recent_span > 0. else 0.
+        # Retain close, genuinely entering slow vehicles, including queued
+        # traffic, but do not brake for stationary objects outside the lane.
+        if (recent_span < .2-1e-6 or physical_inward < .25 or physical_movement < .06 or
+            abs(offset) > width[0]/2.+.7):
+          continue
+        if abs(curvature)*speed > .015:
+          # Curve-side clutter can carry plausible nonzero radar velocity. A
+          # near-stationary object on a bend additionally needs a vision car
+          # at that position; moving cut-ins keep the normal fast path below.
+          vision_match = False
+          for vehicle in getattr(model, 'leadsV3', []):
+            if len(vehicle.x) and len(vehicle.y):
+              vx, vy, probability = float(vehicle.x[0]), float(vehicle.y[0]), float(vehicle.prob)
+              if (all(math.isfinite(v) for v in (vx, vy, probability)) and probability >= .5 and
+                  abs(vx-1.52-lead.dRel) <= max(3., lead.dRel*.2) and abs(-vy-lead.yRel) <= .8):
+                vision_match = True
+                break
+          if not vision_match:
+            continue
       # A short, strong, corroborated inward motion may suppress acceleration
       # early. It cannot request braking without the normal confirmation.
       fast_prepare = (lane_confident and span >= .2-1e-6 and len(recent) >= 5 and recent_span >= .2-1e-6 and
@@ -165,10 +196,23 @@ class CutInAnticipation:
       if target is None or candidate_target < target:
         target, chosen, stage = candidate_target, key, candidate_stage
         urgent, rapid = candidate_urgent, imminent
+        chosen_state = (sample_time, key, lead.dRel, offset, lead.vRel, lead.vLead)
 
     self.stage, self.track_id = stage, chosen
     if target is not None:
       self.release_since = None
+      if self.limit is not None and self.last_target is not None and chosen != self.last_target[1]:
+        stamp, _, distance, lateral, relative, velocity = self.last_target
+        elapsed = sample_time-stamp
+        continuous = (0. <= elapsed <= .25 and
+                      abs(chosen_state[2]-(distance+relative*elapsed)) <= 1.5 and
+                      abs(chosen_state[3]-lateral) <= .4 and abs(chosen_state[5]-velocity) <= 2.)
+        if not continuous:
+          # Each unrelated track must earn its own restriction. Never carry a
+          # stronger old braking cap into a weaker newly selected candidate.
+          self.limit = max(self.limit, target)
+          self.imminent_until = now+.4 if rapid else -math.inf
+      self.last_target = chosen_state
       if self.limit is None:
         self.limit = min(normal_accel, max(0., current_accel)) if current_accel is not None else normal_accel
       # Positive cap and negative cruise goal both change smoothly.
@@ -181,10 +225,15 @@ class CutInAnticipation:
         self.release_since = now
       self.stage, self.track_id = 'recover', None
       if now >= self.imminent_until and now-self.release_since >= .15-1e-6:
-        self.limit = min(normal_accel, self.limit+.35*dt)
+        # After the short dropout hold, unwind unsupported braking promptly.
+        # Restore positive acceleration more gently; obstacle braking in MPC
+        # remains independent of this anticipatory upper bound.
+        release_rate = .8 if self.limit < 0. else .5
+        self.limit = min(normal_accel, self.limit+release_rate*dt)
       if self.limit >= normal_accel-1e-6:
         self.limit = None
         self.stage, self.track_id = 'off', None
         self.release_since = None
+        self.last_target = None
     return min(normal_accel, self.limit) if self.limit is not None else None
 

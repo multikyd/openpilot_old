@@ -48,6 +48,21 @@ class TestOvertakePlan(unittest.TestCase):
     self.assertEqual((result.phase,result.reason),('cooldown','return_completed'))
     self.assertEqual(result.original_set_speed,30.)
 
+  def test_test50_14m23_hypothetical_return_does_not_fabricate_completion(self):
+    # Scenario intent from the driver, not a recorded rightward crossing.
+    # Original-vehicle rear identity/gap are explicitly hypothetical inputs.
+    self.h.phase='passing';self.h.target_id=63;self.h.original_speed=100./3.6
+    self.h.since=852.83;self.h.previous=852.83
+    self.x=replace(self.x,now=852.83,speed=93./3.6,set_speed=100./3.6,
+                   original_ahead_right=True,rear_track_id=-1,rear_gap=0.)
+    self.assertEqual(self.tick(1.45).phase,'passing')  # early green, target still ahead
+    self.assertEqual(self.tick(6.65,right_ready=False,right_bsm=True).phase,'passing')
+    self.assertEqual(self.tick(2.1,right_ready=True,right_bsm=False,
+                               original_ahead_right=False,rear_track_id=63,rear_gap=35.).phase,'signal_right')
+    self.assertFalse(self.h.running_seen)
+    self.assertEqual(self.tick(1.7,right_lamp=True).phase,'return_right')
+    self.assertNotEqual(self.h.reason,'return_completed')
+
   def test_green_alone_never_bypasses_missing_capabilities(self):
     for kw,reason in ((dict(signal_verified=False),'signal_path_unverified'),
                       (dict(signal_max_seconds=3.),'signal_path_unverified'),

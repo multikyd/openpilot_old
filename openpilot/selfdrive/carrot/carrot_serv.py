@@ -362,6 +362,13 @@ class CarrotServ:
       speed_mps = math.sqrt(temp)
     return max(safe_speed_kph, min(250, speed_mps * 3.6))
 
+  def calculate_bump_speed(self, left_dist, target):
+    # Reach the crossing speed closer to the bump, using a moderately stronger
+    # approach than cameras. Keep a short settling margin before the location.
+    safe_time = min(self.autoNaviSpeedBumpTime, 1.5)
+    decel = min(self.autoNaviSpeedDecelRate * 1.25, 2.0)
+    return self.calculate_current_speed(left_dist, target, safe_time, decel)
+
   def _update_tbt(self):
     #xTurnInfo : 1: left turn, 2: right turn, 3: left lane change, 4: right lane change, 5: rotary, 6: tg, 7: arrive or uturn
     turn_type_mapping = {
@@ -716,8 +723,7 @@ class CarrotServ:
       learned = self.bump_display['target']
       if math.isfinite(learned) and learned > 0:
         target = learned
-    return self.calculate_current_speed(max(0., bump['distance']), target,
-                                        self.autoNaviSpeedBumpTime, self.autoNaviSpeedDecelRate)
+    return self.calculate_bump_speed(max(0., bump['distance']), target)
 
   def _ui_bump_notice(self, now, v_ego):
     # Display the nearest notice; speed control separately compares all caps.
@@ -1157,8 +1163,8 @@ class CarrotServ:
     learned_bump_speed = 250
     if self.bump_display is not None and self.autoNaviSpeedCtrlMode >= 2:
       # Keep the cap until the car is beyond the recorded location; do not release at d=0.
-      learned_bump_speed = self.calculate_current_speed(max(0, self.bump_display['distance']),
-                            self.bump_display['target'], self.autoNaviSpeedBumpTime, self.autoNaviSpeedDecelRate)
+      learned_bump_speed = self.calculate_bump_speed(max(0, self.bump_display['distance']),
+                                                     self.bump_display['target'])
 
     sdi_speed = 250
     hda_active = False
@@ -1166,9 +1172,11 @@ class CarrotServ:
     if (self.xSpdDist > 0 or self.xSpdType in [100, 101]) and self.active_carrot > 0 and not nav_bump_passed:
       if self.xSpdType == 22 and self.bump_display is not None and abs(self.xSpdDist-self.bump_display['distance']) < 15:
         self.xSpdLimit = self.bump_display['target']
-      safe_sec = self.autoNaviSpeedBumpTime if self.xSpdType == 22 else self.autoNaviSpeedCtrlEnd
-      decel = self.autoNaviSpeedDecelRate
-      sdi_speed = min(sdi_speed, self.calculate_current_speed(self.xSpdDist, self.xSpdLimit, safe_sec, decel))
+      if self.xSpdType == 22:
+        sdi_speed = min(sdi_speed, self.calculate_bump_speed(self.xSpdDist, self.xSpdLimit))
+      else:
+        sdi_speed = min(sdi_speed, self.calculate_current_speed(
+          self.xSpdDist, self.xSpdLimit, self.autoNaviSpeedCtrlEnd, self.autoNaviSpeedDecelRate))
       self.active_carrot = 5 if self.xSpdType == 22 else 3
       if self.xSpdType == 4 or (self.xSpdType in [100, 101] and self.xSpdDist <= 0):
         sdi_speed = self.xSpdLimit
