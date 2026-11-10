@@ -14,6 +14,7 @@ from ftplib import FTP
 from openpilot.cereal import log
 import openpilot.cereal.messaging as messaging
 from openpilot.selfdrive.carrot.bump_learning import BumpMemory, BumpPassage
+from openpilot.selfdrive.carrot.bump_approach import BumpApproach
 from openpilot.selfdrive.carrot.tbt_blinker import TbtBlinker
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.carrot.signal_memory import SignalMemory, GREEN, blank as blank_signal
@@ -362,12 +363,18 @@ class CarrotServ:
       speed_mps = math.sqrt(temp)
     return max(safe_speed_kph, min(250, speed_mps * 3.6))
 
-  def calculate_bump_speed(self, left_dist, target):
+  def calculate_bump_speed(self, left_dist, target, speed=None, now=None, channel='main'):
     # Reach the crossing speed closer to the bump, using a moderately stronger
     # approach than cameras. Keep a short settling margin before the location.
     safe_time = min(self.autoNaviSpeedBumpTime, 1.5)
     decel = min(self.autoNaviSpeedDecelRate * 1.25, 2.0)
-    return self.calculate_current_speed(left_dist, target, safe_time, decel)
+    approach_limit = self.calculate_current_speed(left_dist, target, safe_time, decel)
+    if speed is None:
+      return approach_limit
+    if not hasattr(self, 'bump_approach'):
+      self.bump_approach = BumpApproach()
+    return self.bump_approach.update(time.monotonic() if now is None else now,
+                                     left_dist, target, speed, approach_limit, channel)
 
   def _update_tbt(self):
     #xTurnInfo : 1: left turn, 2: right turn, 3: left lane change, 4: right lane change, 5: rotary, 6: tg, 7: arrive or uturn
@@ -723,7 +730,7 @@ class CarrotServ:
       learned = self.bump_display['target']
       if math.isfinite(learned) and learned > 0:
         target = learned
-    return self.calculate_bump_speed(max(0., bump['distance']), target)
+    return self.calculate_bump_speed(max(0., bump['distance']), target, v_ego*3.6, now, 'plus')
 
   def _ui_bump_notice(self, now, v_ego):
     # Display the nearest notice; speed control separately compares all caps.
@@ -1164,7 +1171,7 @@ class CarrotServ:
     if self.bump_display is not None and self.autoNaviSpeedCtrlMode >= 2:
       # Keep the cap until the car is beyond the recorded location; do not release at d=0.
       learned_bump_speed = self.calculate_bump_speed(max(0, self.bump_display['distance']),
-                                                     self.bump_display['target'])
+                                                     self.bump_display['target'], v_ego_kph, bump_now, 'learned')
 
     sdi_speed = 250
     hda_active = False
@@ -1173,7 +1180,8 @@ class CarrotServ:
       if self.xSpdType == 22 and self.bump_display is not None and abs(self.xSpdDist-self.bump_display['distance']) < 15:
         self.xSpdLimit = self.bump_display['target']
       if self.xSpdType == 22:
-        sdi_speed = min(sdi_speed, self.calculate_bump_speed(self.xSpdDist, self.xSpdLimit))
+        sdi_speed = min(sdi_speed, self.calculate_bump_speed(
+          self.xSpdDist, self.xSpdLimit, v_ego_kph, bump_now, 'main'))
       else:
         sdi_speed = min(sdi_speed, self.calculate_current_speed(
           self.xSpdDist, self.xSpdLimit, self.autoNaviSpeedCtrlEnd, self.autoNaviSpeedDecelRate))

@@ -7,6 +7,7 @@ import sys
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import MagicMock
+from openpilot.selfdrive.carrot.bump_approach import BumpApproach
 
 ROOT=Path(__file__).parents[2]
 PATH=ROOT/'carrot/carrot_serv.py'
@@ -16,7 +17,7 @@ UPDATE=next(n for n in SERV.body if isinstance(n,ast.FunctionDef) and n.name=='u
 METHODS={'_update_sdi','_live_plus_bump','_plus_bump_speed','_ui_bump_notice','calculate_current_speed','calculate_bump_speed'}
 body=[n for n in SERV.body if isinstance(n,ast.FunctionDef) and n.name in METHODS]
 cls=ast.ClassDef(name='RealMethods',bases=[],keywords=[],body=body,decorator_list=[]);ast.fix_missing_locations(cls)
-ENV={'math':math};exec(compile(ast.Module(body=[cls],type_ignores=[]),str(PATH),'exec'),ENV)
+ENV={'math':math,'BumpApproach':BumpApproach};exec(compile(ast.Module(body=[cls],type_ignores=[]),str(PATH),'exec'),ENV)
 
 
 def instance():
@@ -49,7 +50,7 @@ def caps(h,now=100.,passed=False):
 class TestSecondaryBump(unittest.TestCase):
   def test_recorded_camera_and_bump_case_now_selects_30(self):
     h=instance();best,env=caps(h)
-    self.assertEqual(best,(h.calculate_bump_speed(16.,30.),'bump'))
+    self.assertEqual(best,(30.,'bump'))
     self.assertEqual((h.xSpdType,h.xSpdDist,h.xSpdLimit),(0,398,50.5))
     self.assertEqual(h._ui_bump_notice(100.,10.),(30,16))
   def test_near_lower_speed_camera_keeps_its_cap(self):
@@ -60,7 +61,7 @@ class TestSecondaryBump(unittest.TestCase):
     self.assertEqual(caps(h)[0],(40.,'road'))
   def test_switching_learning_off_does_not_remove_live_cap(self):
     h=instance();h.bump_display=None
-    self.assertEqual(h._plus_bump_speed(100.,10.),h.calculate_bump_speed(16.,30.))
+    self.assertEqual(h._plus_bump_speed(100.,10.),30.)
   def test_disabled_mode_and_highways_do_not_add_control_cap(self):
     for key,value in (('autoNaviSpeedCtrlMode',0),('autoNaviSpeedCtrlMode',1),('roadcate',0),('roadcate',1)):
       h=instance();setattr(h,key,value)
@@ -77,8 +78,8 @@ class TestSecondaryBump(unittest.TestCase):
     h=instance();h.autoNaviSpeedBumpSpeed=math.nan
     self.assertIsNone(h._live_plus_bump(100.,10.))
   def test_receipt_age_compensates_distance(self):
-    h=instance();h.nSdiPlusDist=56
-    self.assertAlmostEqual(h._live_plus_bump(101.,10.)['distance'],46.)
+    h=instance();h.nSdiPlusDist=26
+    self.assertAlmostEqual(h._live_plus_bump(101.,10.)['distance'],16.)
     self.assertGreater(h._plus_bump_speed(100.,10.),h._plus_bump_speed(101.,10.))
   def test_hold_at_crossing_then_release_after_allowance(self):
     h=instance();h.nSdiPlusDist=10
