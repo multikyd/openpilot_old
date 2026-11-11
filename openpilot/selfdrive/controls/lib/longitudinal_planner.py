@@ -19,6 +19,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.cutin_anticipation import CutInAnticipation
 from openpilot.selfdrive.controls.lib.lead_gap_reserve import LeadGapReserve, NormalStopGap, apply_lead_gap_cap, brake_light_accel_cap
 from openpilot.selfdrive.controls.lib.turn_exit_recovery import TurnExitRecovery
+from openpilot.selfdrive.controls.lib.launch_follow import LaunchFollow
 from openpilot.selfdrive.controls.lib.overtake_plan import OvertakeAcceleration
 from openpilot.selfdrive.selfdrived.events import EventName
 from openpilot.selfdrive.carrot.carrot_functions import XState
@@ -85,6 +86,8 @@ class LongitudinalPlanner:
     self.lead_gap_reserve = LeadGapReserve()
     self.normal_stop_gap = NormalStopGap()
     self.turn_exit_recovery = TurnExitRecovery()
+    self.launch_follow = LaunchFollow()
+    self._launch_follow_active = False
     self.overtake_acceleration = OvertakeAcceleration()
     self.overtake_active = False
     self.pass_advised = False
@@ -254,6 +257,27 @@ class LongitudinalPlanner:
       cloudlog.event('turn_exit_recovery', active=recovery_active, v_ego=float(v_ego),
                      normal_accel=float(normal_accel), recovery_accel=float(recovery_accel))
       self._turn_exit_active = recovery_active
+    launch_base_accel = recovery_accel
+    recovery_accel = self.launch_follow.update(
+      now=now, stamp=sm.logMonoTime['radarState']*1e-9,
+      enabled=(self.CP.openpilotLongitudinalControl and self.mpc.mode == 'acc' and
+               sm['selfdriveState'].enabled and not force_slow_decel and
+               carrot.myDrivingMode.value in (3, 4) and carrot.desireState <= .1 and
+               not (cs.gasPressed or cs.brakePressed or cs.steeringPressed or cs.leftBlinker or cs.rightBlinker) and
+               abs(cs.steeringAngleDeg) < 25. and abs(curvature_future)*v_ego*v_ego < 1. and
+               preview_valid and fresh and sm.all_checks(
+                 ['carState','radarState','modelV2','controlsState','selfdriveState'])),
+      can_accelerate=(not reset_state and not self.output_should_stop and
+                      carrot.xState not in [XState.e2eStop, XState.e2eStopped, XState.e2ePrepare] and
+                      carrot.signal_follow.strength <= 0.),
+      speed=v_ego, target_speed=v_cruise, normal_max=recovery_accel,
+      lead=sm['radarState'].leadOne, other=sm['radarState'].leadTwo, follow=self.mpc.t_follow)
+    launch_active = self.launch_follow.extra > 0.
+    if launch_active != self._launch_follow_active:
+      cloudlog.event('launch_follow_recovery', active=launch_active, v_ego=float(v_ego),
+                     lead_track=int(sm['radarState'].leadOne.radarTrackId),
+                     normal_max=float(launch_base_accel), launch_max=float(recovery_accel))
+      self._launch_follow_active = launch_active
     recovery_accel = self.overtake_acceleration.update(
       recovery_accel, self.dt, self.overtake_active and fresh and not reset_state and self.mpc.mode == 'acc')
     if self.mpc.mode == 'acc':

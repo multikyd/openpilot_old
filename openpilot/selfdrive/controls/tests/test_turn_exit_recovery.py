@@ -138,22 +138,24 @@ class TestPlannerRecoveryIntegration(unittest.TestCase):
     cls = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='LongitudinalPlanner')
     update = next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='update')
     start = next(i for i,n in enumerate(update.body) if isinstance(n,ast.Assign) and
-                 isinstance(n.targets[0],ast.Name) and n.targets[0].id=='cs')
+                 isinstance(n.targets[0],ast.Name) and n.targets[0].id=='now')-1
     end = next(i for i,n in enumerate(update.body[start:],start) if isinstance(n,ast.If) and
                isinstance(n.test,ast.Name) and n.test.id=='reset_state')
     self.block = compile(ast.Module(body=update.body[start:end],type_ignores=[]),'actual_planner_recovery','exec')
     class SM(dict):
       def all_checks(self,*args,**kwargs): return self.valid_checks
-    sm = self.sm = SM(carState=NS(gasPressed=False,brakePressed=False,steeringPressed=True,steeringAngleDeg=15.),
+    sm = self.sm = SM(carState=NS(gasPressed=False,brakePressed=False,steeringPressed=True,steeringAngleDeg=15.,leftBlinker=False,rightBlinker=False),
                       controlsState=NS(curvature=.004,desiredCurvature=.004),selfdriveState=NS(enabled=True),
                       radarState=NS(leadOne=lead(),leadTwo=lead()),
                       modelV2=NS(orientationRate=NS(z=[0.]*33),velocity=NS(x=[0.]*33)))
     sm.valid_checks = True;sm.logMonoTime={n:10_000_000_000 for n in ('carState','radarState','modelV2')}
     self.carrot = NS(desireState=0.,myDrivingMode=NS(value=3),xState=0,
-                     signal_follow=NS(strength=0.),signal_stop_approach=NS(accel_cap=None),
+                     signal_follow=NS(strength=0.),
                      get_carrot_accel=lambda speed:1.)
     recovery = MagicMock();recovery.update.return_value=1.5;recovery.strength=.8
-    self.planner = NS(CP=NS(openpilotLongitudinalControl=True),mpc=NS(mode='acc'),
+    self.planner = NS(CP=NS(openpilotLongitudinalControl=True),mpc=NS(mode='acc',t_follow=1.5),dt=.05,overtake_active=False,
+                      launch_follow=NS(update=lambda **kw:kw['normal_max'],extra=0.),_launch_follow_active=False,
+                      overtake_acceleration=NS(update=lambda value,*args:value),
                       turn_exit_recovery=recovery,_turn_exit_active=False,output_should_stop=False)
     self.env = dict(self=self.planner,sm=sm,carrot=self.carrot,reset_state=False,force_slow_decel=False,
                     v_ego=6.,v_cruise=15.,ModelConstants=NS(IDX_N=33),
@@ -171,7 +173,6 @@ class TestPlannerRecoveryIntegration(unittest.TestCase):
 
   def test_signal_stop_pedal_and_eco_gates(self):
     cases = [(self.carrot.signal_follow,'strength',.2),
-             (self.carrot.signal_stop_approach,'accel_cap',.3),
              (self.sm['carState'],'gasPressed',True),(self.sm['carState'],'brakePressed',True),
              (self.carrot.myDrivingMode,'value',1),(self.carrot.myDrivingMode,'value',2),
              (self.carrot,'xState',1),(self.carrot,'desireState',1.),
@@ -192,6 +193,39 @@ class TestPlannerRecoveryIntegration(unittest.TestCase):
   def test_blended_mode_does_not_enable_recovery(self):
     self.planner.mpc.mode='blended'
     self.assertFalse(self.enabled())
+
+  def test_real_launch_helper_in_planner_recovers_only_after_confirmed_departure(self):
+    path=Path(__file__).parents[1]/'lib/launch_follow.py'
+    spec=importlib.util.spec_from_file_location('real_launch_in_planner',path)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    self.planner.launch_follow=module.LaunchFollow()
+    self.planner.turn_exit_recovery.update.return_value=1.
+    self.planner.turn_exit_recovery.strength=0.
+    self.env['v_ego']=0.
+    self.env['get_future_curvature']=lambda *a,**kw:0.
+    self.env['limit_accel_in_turns']=lambda speed,curve,limits,lat:limits
+    self.sm['carState'].steeringPressed=False
+    self.sm['carState'].steeringAngleDeg=0.
+    front=NS(present=True,radar=True,radarTrackId=40,modelProb=.99,dPath=0.,
+             dRel=3.,vRel=0.,vLead=0.,aLeadK=0.)
+    self.sm['radarState'].leadOne=front
+    self.planner.output_should_stop=True
+    def step(index):
+      self.sm.logMonoTime={key:int((10.+index*.05)*1e9) for key in self.sm.logMonoTime}
+      exec(self.block,self.env)
+    for i in range(15):step(i)
+    self.assertTrue(self.planner.launch_follow.armed)
+    self.assertEqual(self.env['accel_limits_turns'][1],1.)
+    self.planner.output_should_stop=False
+    front.vLead=front.vRel=2.
+    for i in range(15,55):
+      front.dRel+=.1
+      step(i)
+    self.assertGreater(self.env['accel_limits_turns'][1],1.)
+    self.assertLessEqual(self.env['accel_limits_turns'][1],1.35)
+    self.env['force_slow_decel']=True
+    step(55)
+    self.assertEqual(self.env['accel_limits_turns'][1],1.)
 
   def test_mpc_comfort_change_is_disabled_when_a_safety_cap_binds(self):
     import ast

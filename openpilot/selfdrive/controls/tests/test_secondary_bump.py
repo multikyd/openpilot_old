@@ -78,8 +78,8 @@ class TestSecondaryBump(unittest.TestCase):
     h=instance();h.autoNaviSpeedBumpSpeed=math.nan
     self.assertIsNone(h._live_plus_bump(100.,10.))
   def test_receipt_age_compensates_distance(self):
-    h=instance();h.nSdiPlusDist=26
-    self.assertAlmostEqual(h._live_plus_bump(101.,10.)['distance'],16.)
+    h=instance();h.nSdiPlusDist=35
+    self.assertAlmostEqual(h._live_plus_bump(101.,10.)['distance'],25.)
     self.assertGreater(h._plus_bump_speed(100.,10.),h._plus_bump_speed(101.,10.))
   def test_hold_at_crossing_then_release_after_allowance(self):
     h=instance();h.nSdiPlusDist=10
@@ -112,6 +112,16 @@ class TestSecondaryBump(unittest.TestCase):
       self.assertLess(h.calculate_bump_speed(margin+.01,target)-target,.02)
       speeds=[h.calculate_bump_speed(d,target) for d in range(151)]
       self.assertTrue(all(a<=b for a,b in zip(speeds,speeds[1:])))
+  def test_response_allowance_applies_final_target_before_uncompensated_trigger(self):
+    h=instance();h.bump_response_time=.8
+    # At 60 km/h, 95 m is still outside the old 82 m admission point.
+    self.assertGreater(h.calculate_current_speed(95.,30.,1.5,1.5),60.)
+    self.assertEqual(h.calculate_bump_speed(95.,30.,60.,100.,'main'),30.)
+    self.assertEqual(h.calculate_bump_speed(93.,30.,55.,100.1,'main'),30.)
+    # Camera speed calculations are not advanced by bump response allowance.
+    self.assertAlmostEqual(h.calculate_current_speed(95.,30.,2.,1.2),
+                           math.sqrt((30./3.6)**2+2.*1.2*(95.-30./3.6*2.))*3.6)
+
   def test_sensor_passage_releases_secondary_without_dropping_camera(self):
     h=instance()
     spec=importlib.util.spec_from_file_location('openpilot.selfdrive.carrot.bump_learning',ROOT/'carrot/bump_learning.py')

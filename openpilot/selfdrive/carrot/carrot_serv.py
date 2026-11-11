@@ -227,6 +227,7 @@ class CarrotServ:
   def update_params(self):
     self.autoNaviSpeedBumpSpeed = float(self.params.get("AutoNaviSpeedBumpSpeed"))
     self.autoNaviSpeedBumpTime = float(self.params.get("AutoNaviSpeedBumpTime"))
+    self.bump_response_time = min(1.5, max(.8, float(self.params.get("LongActuatorDelay")) + .5))
     self.autoNaviSpeedCtrlEnd = float(self.params.get("AutoNaviSpeedCtrlEnd"))
     self.autoNaviSpeedCtrlMode = self.params.get("AutoNaviSpeedCtrlMode")
     self.autoNaviSpeedSafetyFactor = float(self.params.get("AutoNaviSpeedSafetyFactor")) * 0.01
@@ -368,7 +369,11 @@ class CarrotServ:
     # approach than cameras. Keep a short settling margin before the location.
     safe_time = min(self.autoNaviSpeedBumpTime, 1.5)
     decel = min(self.autoNaviSpeedDecelRate * 1.25, 2.0)
-    approach_limit = self.calculate_current_speed(left_dist, target, safe_time, decel)
+    # The final target is latched at admission. Account for command/actuator
+    # response before locating that admission point, only for bump control.
+    response = getattr(self, 'bump_response_time', .8)
+    response_dist = max(0., speed)/3.6*response if speed is not None else 0.
+    approach_limit = self.calculate_current_speed(max(0., left_dist-response_dist), target, safe_time, decel)
     if speed is None:
       return approach_limit
     if not hasattr(self, 'bump_approach'):

@@ -6,6 +6,7 @@ from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.stop_approach import TerminalStopRelease
+from openpilot.selfdrive.controls.lib.final_stop_cushion import FinalStopCushion
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
@@ -61,6 +62,7 @@ class LongControl:
                              rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
     self.terminal_stop_release = TerminalStopRelease()
+    self.final_stop_cushion = FinalStopCushion()
 
 
     self.params = Params()
@@ -166,5 +168,14 @@ class LongControl:
                str(long_plan.longitudinalPlanSource) == 'lead0' and
                not (CS.gasPressed or CS.brakePressed or CS.steeringPressed or CS.leftBlinker or CS.rightBlinker)),
       dt=DT_CTRL)
+    output_accel = self.final_stop_cushion.update(
+      lead, radarState.leadTwo, CS.vEgo, CS.standstill, output_accel, self.last_output_accel,
+      radar_stamp, observation_time,
+      enabled=(terminal_stop_ready and active and self.CP.brand == "hyundai" and
+               self.long_control_state in (LongCtrlState.pid, LongCtrlState.stopping) and not soft_hold_active and
+               not long_plan.fcw and long_plan.xState == 0 and
+               str(long_plan.longitudinalPlanSource) == 'lead0' and
+               not (CS.gasPressed or CS.brakePressed or CS.steeringPressed or CS.leftBlinker or CS.rightBlinker)),
+      stopping=self.long_control_state == LongCtrlState.stopping, dt=DT_CTRL)
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel, a_target_ff, j_target_now

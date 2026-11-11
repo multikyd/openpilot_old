@@ -279,15 +279,18 @@ class TestTerminalStopRelease(unittest.TestCase):
     tree=ast.parse((Path(__file__).parents[1]/'lib/longcontrol.py').read_text(encoding='utf8'))
     nodes=[n for n in tree.body if isinstance(n,(ast.ClassDef,ast.FunctionDef))]
     states=NS(off=0,stopping=1,starting=2,pid=3)
-    env=dict(np=np,DT_CTRL=.01,LongCtrlState=states)
+    cushion_spec=importlib.util.spec_from_file_location('cushion_fixture',Path(__file__).parents[1]/'lib/final_stop_cushion.py')
+    cushion_module=importlib.util.module_from_spec(cushion_spec);cushion_spec.loader.exec_module(cushion_module)
+    env=dict(np=np,DT_CTRL=.01,LongCtrlState=states,FinalStopCushion=cushion_module.FinalStopCushion)
     exec(compile(ast.Module(body=nodes,type_ignores=[]),'actual_longcontrol','exec'),env)
     obj=env['LongControl'].__new__(env['LongControl'])
     obj.CP=NS(brand='hyundai',vEgoStarting=.5,startingState=False,stopAccel=-.5,
               longitudinalTuning=NS(kpBP=[0],kiBP=[0]),stoppingDecelRate=.8)
     obj.long_control_state=states.pid;obj.last_output_accel=-1.2;obj.terminal_stop_release=self.h
+    obj.final_stop_cushion=cushion_module.FinalStopCushion()
     obj.readParamCount=0;obj.stopping_accel=-.5;obj.use_accel_pid=False
     obj.pid=NS(update=lambda *args,**kwargs:-1.2,reset=lambda:None)
-    cs=NS(softHoldActive=0,vEgo=.5,aEgo=-.8,brakePressed=False,gasPressed=False,
+    cs=NS(standstill=False,softHoldActive=0,vEgo=.5,aEgo=-.8,brakePressed=False,gasPressed=False,
           steeringPressed=False,leftBlinker=False,rightBlinker=False,cruiseState=NS(standstill=False))
     plan=NS(aTarget=-1.2,vTargetNow=0.,jTargetNow=0.,shouldStop=False,
             fcw=False,xState=0,longitudinalPlanSource='lead0')
@@ -301,6 +304,30 @@ class TestTerminalStopRelease(unittest.TestCase):
     output,_,_=obj.update(True,cs,plan,(-3.5,2.),0.,radar,
                          radar_stamp=self.t,observation_time=self.t,terminal_stop_ready=True)
     self.assertAlmostEqual(output,-1.185)
+
+    # Exercise the actual new taper after entering stopping at the final crawl.
+    obj.CP.stopAccel=obj.stopping_accel=-2.
+    cs.vEgo=.25;self.l.vRel=-.25;self.l.dRel=2.4
+    obj.long_control_state=states.pid;plan.shouldStop=False
+    for _ in range(16):
+      self.t+=.05
+      obj.update(True,cs,plan,(-3.5,2.),0.,radar,radar_stamp=self.t,
+                 observation_time=self.t,terminal_stop_ready=True)
+    previous=float(obj.last_output_accel)
+    plan.shouldStop=True;self.t+=.05
+    output,_,_=obj.update(True,cs,plan,(-3.5,2.),0.,radar,radar_stamp=self.t,
+                         observation_time=self.t,terminal_stop_ready=True)
+    self.assertAlmostEqual(output,previous+.006)
+    # At standstill the original .8 m/s^3 hold build resumes; soft hold stays native.
+    cs.standstill=True;cs.vEgo=0.;self.l.vRel=0.;self.t+=.05
+    previous=float(output)
+    output,_,_=obj.update(True,cs,plan,(-3.5,2.),0.,radar,radar_stamp=self.t,
+                         observation_time=self.t,terminal_stop_ready=True)
+    self.assertAlmostEqual(output,previous-.008)
+    cs.softHoldActive=1;self.t+=.05
+    output,_,_=obj.update(True,cs,plan,(-3.5,2.),0.,radar,radar_stamp=self.t,
+                         observation_time=self.t,terminal_stop_ready=True)
+    self.assertEqual(output,-2.)
 
   def test_actual_controller_gate_keeps_hold_events_and_pedals(self):
     import ast
