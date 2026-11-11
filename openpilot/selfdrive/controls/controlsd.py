@@ -17,6 +17,8 @@ from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.model_lane_guard import ModelLaneGuard, LanePositionGuard
+from openpilot.selfdrive.controls.lib.mode_transition import ModeTransition, boundary_escape_direction
+from openpilot.selfdrive.controls.lib.low_speed_model_guard import LowSpeedModelGuard
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
@@ -74,6 +76,8 @@ class Controls:
     self.desired_curvature = 0.0
     self.model_lane_guard = ModelLaneGuard()
     self.lane_position_guard = LanePositionGuard()
+    self.mode_transition = ModeTransition()
+    self.low_speed_model_guard = LowSpeedModelGuard()
     self.lane_center_preference = self.params.get("LaneCenterOffset", return_default=True)
     self.camera_offset = self.params.get("CameraOffsetAdj", return_default=True)
 
@@ -234,7 +238,18 @@ class Controls:
     model_lane_guard_used = False
     position_guard_used = False
     position_now = time.monotonic()
+    self.low_speed_model_guard.observe_driver(CS, self.curvature, position_now)
     def position_curvature(curvature, guarded=None):
+      nonlocal model_lane_guard_used
+      if self.lanefull_mode_enabled:
+        # Inside-boundary protection is needed in lane mode too: a centered
+        # desired path alone cannot prevent the measured car drifting inward.
+        model_lane_guard_used = True
+        guarded = self.model_lane_guard.update(
+          model_v2, CS, curvature, self.sm.logMonoTime['modelV2']*1e-9, position_now,
+          enabled=(self.sm.all_checks(['modelV2', 'carState']) and
+                   0. <= position_now-self.sm.logMonoTime['carState']*1e-9 <= .1),
+          camera_offset=self.camera_offset, actuator_delay=steer_actuator_delay)
       return self.lane_position_guard.update(
         model_v2, CS, curvature, curvature if guarded is None else guarded,
         self.sm.logMonoTime['modelV2']*1e-9, position_now,
@@ -269,6 +284,12 @@ class Controls:
         camera_offset=self.camera_offset, actuator_delay=steer_actuator_delay)
       position_guard_used = True
       guarded_curvature = position_curvature(model_v2.action.desiredCurvature, guarded_curvature)
+      guarded_curvature = self.low_speed_model_guard.update(
+        model_v2, CS, guarded_curvature, self.curvature,
+        self.sm.logMonoTime['modelV2']*1e-9, guard_now,
+        enabled=(self.sm.all_checks(['modelV2', 'carState']) and
+                 0. <= guard_now-self.sm.logMonoTime['carState']*1e-9 <= .1),
+        camera_offset=self.camera_offset)
       # Reduce filter lag only once the model has started the requested maneuver.
       meta = model_v2.meta
       right_entry = (meta.laneChangeDirection == LaneChangeDirection.right and
@@ -290,6 +311,16 @@ class Controls:
     if not model_lane_guard_used:
       self.model_lane_guard.reset()
 
+    transition_ready = (CC.latActive and not CS.steeringPressed and
+                        not self.sm.valid['lateralManeuverPlan'] and
+                        str(model_v2.meta.laneChangeState) == 'off' and
+                        str(model_v2.meta.desire) == 'none' and
+                        self.sm.all_checks(['modelV2', 'carState']) and
+                        0. <= position_now-self.sm.logMonoTime['modelV2']*1e-9 <= .2)
+    new_desired_curvature = self.mode_transition.update(
+      position_now, 'lane' if self.lanefull_mode_enabled else 'model',
+      self.desired_curvature, new_desired_curvature, enabled=transition_ready,
+      escape_direction=boundary_escape_direction(model_v2, self.camera_offset) if transition_ready else 0)
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["lateralDelay"].lateralDelay + effective_lat_smoothing
     actuators.curvature = float(self.desired_curvature)
@@ -424,6 +455,10 @@ class Controls:
       cs.debugMsg1 += f" LPG={self.lane_position_guard.accel:+.2f}"
     if abs(self.model_lane_guard.accel) > 1e-4:
       cs.debugMsg1 += f" MLG={self.model_lane_guard.side:+d}:{self.model_lane_guard.accel:+.2f}"
+    if self.mode_transition.active:
+      cs.debugMsg1 += " MODE_JOIN"
+    if not self.lanefull_mode_enabled and self.low_speed_model_guard.reason != 'off':
+      cs.debugMsg1 += f" LOW_GUARD={self.low_speed_model_guard.reason}"
     #cs.debugMsg2 = str(CO.actuatorsOutput.kisaLog2)
     #cs.debugMsg3 = str(CO.actuatorsOutput.kisaLog3)
     CC.e2eStandstill = bool(CO.actuatorsOutput.e2eStandstill)
