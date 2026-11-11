@@ -223,14 +223,11 @@ def get_display_speed(speed_ms: float, metric: bool) -> str:
 AlertCallbackType = Callable[[car.CarParams, car.CarState, messaging.SubMaster, bool, int, log.ControlsState], Alert]
 
 
-def soft_disable_alert(alert_text_2: str, *, audible_alert=AudibleAlert.warningSoft, creation_delay=0.) -> AlertCallbackType:
+def soft_disable_alert(alert_text_2: str) -> AlertCallbackType:
   def func(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
     if soft_disable_time < int(0.5 / DT_CTRL):
       return ImmediateDisableAlert(alert_text_2)
-    alert = SoftDisableAlert(alert_text_2)
-    alert.audible_alert = audible_alert
-    alert.creation_delay = creation_delay
-    return alert
+    return SoftDisableAlert(alert_text_2)
   return func
 
 def user_soft_disable_alert(alert_text_2: str) -> AlertCallbackType:
@@ -650,7 +647,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.locationdTemporaryError: {
     ET.NO_ENTRY: NoEntryAlert("locationd Temporary Error"),
-    ET.SOFT_DISABLE: soft_disable_alert("locationd Temporary Error", audible_alert=AudibleAlert.none, creation_delay=.3),
+    ET.SOFT_DISABLE: soft_disable_alert("locationd Temporary Error"),
   },
 
   EventName.locationdPermanentError: {

@@ -61,17 +61,6 @@ def get_lag_adjusted_curvature(CP, v_ego, psis, curvatures, steer_actuator_delay
   average_curvature_desired = psi / distance
   desired_curvature = 2 * average_curvature_desired - current_curvature_desired
 
-  # Delay extrapolation must not invent a reverse turn when the local lane
-  # plan still bends entirely the other way. Preserve real S-bend reversals
-  # when opposite curvature is actually present in the preview interval.
-  preview_time = min(1., max(.3, delay+.2))
-  preview_end = min(len(curvatures), int(np.searchsorted(ModelConstants.T_IDXS[:CONTROL_N], preview_time))+1)
-  preview = np.asarray(curvatures, dtype=float)[:preview_end]
-  if (len(preview) and np.isfinite(preview).all() and abs(current_curvature_desired) > .0005 and
-      current_curvature_desired*desired_curvature < 0. and
-      not np.any(np.sign(desired_curvature)*preview > .0003)):
-    desired_curvature = float(np.sign(current_curvature_desired)*np.min(np.abs(preview)))
-
   # This is the "desired rate of the setpoint" not an actual desired rate
   max_curvature_rate = MAX_LATERAL_JERK / (v_ego**2) # inexact calculation, check https://github.com/commaai/openpilot/pull/24755
   safe_desired_curvature = np.clip(desired_curvature,
