@@ -1,4 +1,3 @@
-"""Only the temporary localizer's nonurgent sound is suppressed."""
 import ast
 from pathlib import Path
 from types import SimpleNamespace as NS
