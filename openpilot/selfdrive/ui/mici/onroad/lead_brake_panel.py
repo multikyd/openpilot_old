@@ -23,7 +23,7 @@ class LeadBrakePanel:
     self.draw(sidebar, state)
 
   @staticmethod
-  def draw_speed(rect, speed, metric, color):
+  def draw_speed(rect, speed, metric, color, offset_text=None):
     font = gui_app.font(FontWeight.BOLD)
     value = str(round(max(0., speed)))
     available = max(1., rect.width-6)
@@ -49,6 +49,18 @@ class LeadBrakePanel:
     measured = measure_text_cached(font, unit, size)
     rl.draw_text_ex(font, unit, rl.Vector2(rect.x+(rect.width-measured.x)/2, rect.y+55),
                     size, 0, rl.Color(220, 226, 233, 255))
+    if offset_text is not None:
+      # The lead silhouette starts 23 px below its y=70 panel header. Use
+      # that blank strip below km/h without shrinking the existing car/status.
+      text = str(offset_text)
+      size = 18.
+      measured = measure_text_cached(font, text, size)
+      size *= min(1., (rect.width-10)/max(1., measured.x))
+      measured = measure_text_cached(font, text, size)
+      rl.draw_rectangle_rounded(rl.Rectangle(rect.x+4, rect.y+69, rect.width-8, 22),
+                                .2, 8, rl.Color(0, 0, 0, 190))
+      rl.draw_text_ex(font, text, rl.Vector2(rect.x+(rect.width-measured.x)/2, rect.y+69),
+                      size, 0, rl.Color(225, 232, 240, 255))
 
   @staticmethod
   def draw(rect, state):

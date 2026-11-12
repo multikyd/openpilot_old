@@ -164,6 +164,7 @@ class CarrotServ:
     self.last_update_gps_time = 0
     self.last_update_gps_time_phone = 0
     self.last_update_gps_time_navi = 0
+    self.navigation_packet_stamp = None
     self.bearing_offset = 0.0
     self.bearing_measured = 0.0
     self.bearing = 0.0
@@ -1398,6 +1399,8 @@ class CarrotServ:
     msg = messaging.new_message('carrotMan')
     msg.valid = True
     msg.carrotMan.activeCarrot = self.active_carrot
+    navigation_stamp = getattr(self, 'navigation_packet_stamp', None)
+    msg.carrotMan.naviConnected = navigation_stamp is not None and 0. <= time.monotonic()-navigation_stamp < 3.
     msg.carrotMan.nRoadLimitSpeed = int(self.nRoadLimitSpeed)
     msg.carrotMan.roadLimitSpeedRaw = int(self.road_limit_raw)
     limit_stamp = self.road_limit_stamp
@@ -1545,6 +1548,7 @@ class CarrotServ:
 
     if "nRoadLimitSpeed" in json:
       #print(json)
+      self.navigation_packet_stamp = now
       self.active_sdi_count = self.active_sdi_count_max
       ### roadLimitSpeed
       nRoadLimitSpeed = int(json.get("nRoadLimitSpeed", 20))

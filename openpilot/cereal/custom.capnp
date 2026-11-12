@@ -52,6 +52,7 @@ struct CarrotMan @0x81c2f05a394cf4af {
   naviHighway @38 :Bool;
   roadLimitSpeedRaw @39 :Int32; # km/h before cruise offsets and legacy display fixes
   roadLimitSpeedValid @40 :Bool;
+  naviConnected @41 :Bool; # recent navigation-app packet, not a phone heartbeat
 }
 
 struct SignalDisplay {

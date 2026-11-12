@@ -7,7 +7,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.mici.onroad.lead_brake_panel import LeadBrakePanel
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
-from openpilot.selfdrive.ui.mici.onroad.hud_layout import (LEFT_CENTER, HEADER_TOP, left_car_box,
+from openpilot.selfdrive.ui.mici.onroad.hud_layout import (LEFT_CENTER, HEADER_TOP, NAV_STATUS_WIDTH, left_car_box,
                                                         lower_notice_box, gap_bar_boxes, select_road_notice)
 from openpilot.selfdrive.ui.mici.onroad.signal_renderer import draw_signal_panel, draw_overtake_advice
 from openpilot.selfdrive.ui.mici.onroad.bookmark_transfer import BookmarkTransferBanner
@@ -212,7 +212,7 @@ class HudRenderer(Widget):
     self._draw_model_source(rect)
 
     self._draw_lower_left(rect)
-    self._draw_camera_offset(rect)
+    self._draw_navigation_status(rect)
     if ui_state.started:
       self._bookmark_transfer.draw(rect, self._font_bold)
     if (self._can_draw_top_icons and ui_state.started and
@@ -264,22 +264,25 @@ class HudRenderer(Widget):
       except ValueError:
         self._camera_offset_text = "--"
 
-  def _draw_camera_offset(self, rect: rl.Rectangle) -> None:
+  def _draw_navigation_status(self, rect: rl.Rectangle) -> None:
     if not self._can_draw_top_icons or not ui_state.started or rect.width < 440:
       return
     sm = ui_state.sm
-    highway = (sm.valid['carrotMan'] and sm.alive['carrotMan'] and
-               sm.recv_frame['carrotMan'] >= ui_state.started_frame and
-               0 <= time.monotonic()-sm.recv_time['carrotMan'] < 1 and sm['carrotMan'].naviHighway)
-    text = "Highway" if highway else self._camera_offset_text
-    badge_width = 120 if highway else 80
+    fresh = (sm.valid['carrotMan'] and sm.alive['carrotMan'] and
+             sm.recv_frame['carrotMan'] >= ui_state.started_frame and
+             0 <= time.monotonic()-sm.recv_time['carrotMan'] < 1)
+    connected = fresh and getattr(sm['carrotMan'], 'naviConnected', False)
+    highway = connected and sm['carrotMan'].naviHighway
+    text = "Highway" if highway else "NAVI"
+    badge_width = NAV_STATUS_WIDTH
     size = 32
     measured = measure_text_cached(self._font_bold, text, size)
     size *= min(1., (badge_width - 8) / max(1., measured.x))
     width = measure_text_cached(self._font_bold, text, size).x
     center = rect.x + rect.width / 2
     rl.draw_rectangle_rounded(rl.Rectangle(center-badge_width/2, rect.y+HEADER_TOP, badge_width, 40), .2, 8, rl.Color(0, 0, 0, 190))
-    rl.draw_text_ex(self._font_bold, text, rl.Vector2(center-width/2, rect.y+7), size, 0, rl.WHITE)
+    color = rl.Color(100, 235, 150, 255) if connected else rl.Color(135, 145, 155, 255)
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(center-width/2, rect.y+7), size, 0, color)
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     loading = ui_state.chestnut_state == ChestnutState.LOADING
@@ -445,7 +448,7 @@ class HudRenderer(Widget):
       speed_color = COLORS.WHITE
 
     sidebar = rl.Rectangle(rect.x+rect.width-SIDE_PANEL_WIDTH, rect.y, SIDE_PANEL_WIDTH, rect.height)
-    LeadBrakePanel.draw_speed(sidebar, self.speed, s.is_metric, speed_color)
+    LeadBrakePanel.draw_speed(sidebar, self.speed, s.is_metric, speed_color, offset_text=self._camera_offset_text)
 
   def _draw_lower_left(self, rect: rl.Rectangle) -> None:
     s = ui_state

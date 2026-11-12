@@ -5,6 +5,7 @@ import math
 HEADER_TOP = 4
 LEFT_CENTER = 46  # driver x=16 + width=60 / 2; also TPMS, gap and warning center
 SPEED_HEADER_HEIGHT = 70
+NAV_STATUS_WIDTH = 120
 
 
 def left_car_box(x, y):
@@ -21,10 +22,10 @@ def gap_bar_boxes(x, y):
 
 
 def signal_box(x, y, width):
-  # Offset box ends at video center + 40. Keep an 8px gap and a rounded-corner inset.
+  # The navigation badge ends at video center + 60. Keep an 8px gap.
   if width < 440:
     return None
-  available = width/2-40-8-20
+  available = width/2-NAV_STATUS_WIDTH/2-8-20
   w = min(190., available)
   return (x+width-20-w, y+HEADER_TOP, w, 74*w/232)
 

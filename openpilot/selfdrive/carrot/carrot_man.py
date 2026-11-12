@@ -1566,6 +1566,7 @@ class CarrotMan:
     self.params_memory.remove("TrafficLightContext")
     serv = self.carrot_serv
     serv.navi_highway_stamp = None
+    serv.navigation_packet_stamp = None
     serv.active_count = serv.active_sdi_count = 0
     serv.nSdiType = serv.nSdiPlusType = serv.nSdiBlockType = serv.nSdiPlusBlockType = -1
     serv.nSdiDist = serv.nSdiPlusDist = serv.nSdiBlockDist = serv.nSdiPlusBlockDist = 0
