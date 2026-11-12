@@ -1134,7 +1134,8 @@ REBOOT_COMMANDS = {
     "git_pull_reboot": (["bash", "-c", "git pull && touch /data/ks && rm -f /data/openpilot/prebuilt"], False),
     "git_pull_reboot_force": (["bash", "-c", "git pull --force && touch /data/ks && rm -f /data/openpilot/prebuilt"], True),
     "git_reset_reboot": (["bash", "-c", "git fetch && git reset --hard $(git rev-parse --symbolic-full-name @{u}) && touch /data/ks && rm -f /data/openpilot/prebuilt"], False),
-    "git_reset_reboot_force": (["bash", "-c", "git fetch && git reset --hard $(git rev-parse --symbolic-full-name @{u}) && touch /data/ks && rm -f /data/openpilot/prebuilt"], True),
+    # Older agent apps may still request this ID; reset must use orderly shutdown too.
+    "git_reset_reboot_force": (["bash", "-c", "git fetch && git reset --hard $(git rev-parse --symbolic-full-name @{u}) && touch /data/ks && rm -f /data/openpilot/prebuilt"], False),
 }
 
 
@@ -1147,7 +1148,8 @@ def start_agent_command(cmd_id, param=None):
         if not isinstance(param, str) or not re.fullmatch(r"[0-9a-fA-F]{7,40}", param):
             raise ValueError("Invalid restore commit")
         command = ["bash", "-c", "git reset --hard "+param+" && touch /data/ks && rm -f /data/openpilot/prebuilt"]
-        force = True
+        # Restore changes files forcefully, but must not bypass manager shutdown.
+        force = False
     elif cmd_id in REBOOT_COMMANDS:
         command, force = REBOOT_COMMANDS[cmd_id]
     elif cmd_id == "git_log_export":
