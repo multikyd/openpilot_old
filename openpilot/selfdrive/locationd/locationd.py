@@ -13,7 +13,7 @@ from openpilot.common.realtime import config_realtime_process
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import rotate_std
-from openpilot.selfdrive.locationd.camera_odometry_validity import CameraOdometryValidity
+from openpilot.selfdrive.locationd.camera_odometry_validity import LocationCameraOdometryValidity
 from openpilot.selfdrive.locationd.models.pose_kf import PoseKalman, States
 from openpilot.selfdrive.locationd.models.constants import ObservationKind, GENERATED_DIR
 
@@ -279,7 +279,7 @@ def main():
   estimator = LocationEstimator(DEBUG)
 
   filter_initialized = False
-  camera_validity = CameraOdometryValidity()
+  camera_validity = LocationCameraOdometryValidity()
   critical_services = ["accelerometer", "gyroscope", "cameraOdometry"]
   observation_input_invalid = defaultdict(int)
 
@@ -334,13 +334,19 @@ def main():
 
     if sm.updated["cameraOdometry"]:
       critical_service_inputs_valid = all(observation_input_invalid[s] < input_invalid_threshold[s] for s in critical_services)
+      other_inputs_valid = all(valid for service, valid in sm.valid.items() if service != "cameraOdometry")
+      sensors_valid = sensor_all_checks(acc_msgs, gyro_msgs, sensor_valid, sensor_recv_time, sensor_alive, SIMULATION)
       camera = sm["cameraOdometry"]
+      was_holding = camera_validity.holding
       camera_valid = camera_validity.update(sm.valid["cameraOdometry"], camera.frameId,
                                            camera.timestampEof * 1e-9,
-                                           sm.logMonoTime["cameraOdometry"] * 1e-9, camera_accepted)
-      other_inputs_valid = all(valid for service, valid in sm.valid.items() if service != "cameraOdometry")
+                                           sm.logMonoTime["cameraOdometry"] * 1e-9, camera_accepted,
+                                           allow_grace=(filter_initialized and sensors_valid and
+                                                        other_inputs_valid and critical_service_inputs_valid))
+      if was_holding != camera_validity.holding:
+        cloudlog.event("locationd_camera_grace", active=camera_validity.holding,
+                       frame_id=int(camera.frameId), max_gap_s=camera_validity.MAX_GAP)
       inputs_valid = other_inputs_valid and camera_valid and critical_service_inputs_valid
-      sensors_valid = sensor_all_checks(acc_msgs, gyro_msgs, sensor_valid, sensor_recv_time, sensor_alive, SIMULATION)
 
       msg = estimator.get_msg(sensors_valid, inputs_valid, filter_initialized)
       pm.send("deviceMotion", msg)

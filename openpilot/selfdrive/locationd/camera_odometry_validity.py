@@ -24,6 +24,50 @@ class CameraOdometryValidity:
             0 < log_time - stamp <= self.MAX_GAP)
 
 
+class LocationCameraOdometryValidity:
+  """Bridge at most 0.5 s of skipped-camera odometry with healthy other inputs.
+
+  This changes the temporary-error input flag only. Invalid poses are never
+  passed to the estimator. Calibration retains its independent 0.15 s policy.
+  """
+  MAX_GAP = .5
+  MAX_FRAME_GAP = 10  # camera frame IDs advance at 20 Hz
+
+  def __init__(self):
+    self.last_good = self.previous = None
+    self.holding = False
+
+  def update(self, valid, frame_id, timestamp_eof, log_time, accepted, *, allow_grace):
+    previous = self.previous
+    was_holding = self.holding
+    self.previous = (frame_id, timestamp_eof, log_time)
+    self.holding = False
+    finite = all(math.isfinite(v) for v in (timestamp_eof, log_time))
+    if valid:
+      self.last_good = ((frame_id, timestamp_eof, log_time) if
+                        accepted and allow_grace and finite and frame_id >= 0 and
+                        0 <= log_time-timestamp_eof <= self.MAX_GAP else None)
+      # Keep the existing handling of estimator rejects: their separate bad
+      # input counters decide validity; they cannot seed subsequent grace.
+      return True
+    good = self.last_good
+    if (not allow_grace or good is None or previous is None or not finite or
+        not 0 <= log_time-timestamp_eof <= self.MAX_GAP):
+      self.last_good = None
+      return False
+    frame, eof, stamp = good
+    prev_frame, prev_eof, prev_stamp = previous
+    self.holding = bool(
+      2 <= frame_id-frame <= self.MAX_FRAME_GAP and
+      frame_id > prev_frame and timestamp_eof > prev_eof and log_time > prev_stamp and
+      0 < timestamp_eof-eof <= self.MAX_GAP and 0 < log_time-stamp <= self.MAX_GAP and
+      (was_holding or previous == good))
+    if not self.holding:
+      # A broken/expired window needs a newly accepted sample to rearm.
+      self.last_good = None
+    return self.holding
+
+
 class CalibrationOdometryValidity:
   """Retain trusted calibration only for one fresh, isolated odometry skip.
 

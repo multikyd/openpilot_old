@@ -92,3 +92,90 @@ class TestCalibrationOdometryValidity(unittest.TestCase):
     self.setUp()
     self.assertTrue(self.skip())
     self.assertFalse(self.guard.update(True, 103, 10.15, 10.16, trusted=True, now=10.17))
+
+
+class TestLocationCameraOdometryValidity(unittest.TestCase):
+  def setUp(self):
+    self.guard = module.LocationCameraOdometryValidity()
+    self.assertTrue(self.guard.update(True, 100, 10., 10.01, True, allow_grace=True))
+
+  def test_model_skip_can_bridge_point2_seconds(self):
+    self.assertTrue(self.guard.update(False, 104, 10.2, 10.21, False, allow_grace=True))
+    self.assertTrue(self.guard.holding)
+
+  def test_consecutive_skips_stop_at_half_second_not_half_second_per_sample(self):
+    for frame, elapsed in ((102,.1),(104,.2),(106,.3),(108,.4),(110,.5)):
+      self.assertTrue(self.guard.update(False, frame, 10.+elapsed, 10.01+elapsed,
+                                       False, allow_grace=True))
+    self.assertFalse(self.guard.update(False, 111, 10.55, 10.56, False, allow_grace=True))
+    self.assertFalse(self.guard.update(False, 112, 10.6, 10.61, False, allow_grace=True))
+
+  def test_recovery_needs_an_accepted_good_frame(self):
+    self.guard.update(False, 110, 10.5, 10.51, False, allow_grace=True)
+    self.assertFalse(self.guard.update(False, 111, 10.55, 10.56, False, allow_grace=True))
+    self.assertTrue(self.guard.update(True, 112, 10.6, 10.61, True, allow_grace=True))
+    self.assertFalse(self.guard.holding)
+    self.assertTrue(self.guard.update(False, 114, 10.7, 10.71, False, allow_grace=True))
+
+  def test_no_grace_without_history_or_observed_frame_skip(self):
+    h=module.LocationCameraOdometryValidity()
+    self.assertFalse(h.update(False, 104, 10.2, 10.21, False, allow_grace=True))
+    self.assertFalse(self.guard.update(False, 101, 10.05, 10.06, False, allow_grace=True))
+    self.assertFalse(self.guard.update(False, 103, 10.15, 10.16, False, allow_grace=True))
+
+  def test_unhealthy_sensor_filter_or_other_input_context_revokes_grace(self):
+    self.assertFalse(self.guard.update(False, 104, 10.2, 10.21, False, allow_grace=False))
+    self.assertFalse(self.guard.update(False, 106, 10.3, 10.31, False, allow_grace=True))
+
+  def test_estimator_reject_does_not_seed_grace(self):
+    self.assertTrue(self.guard.update(True, 101, 10.05, 10.06, False, allow_grace=True))
+    self.assertFalse(self.guard.update(False, 103, 10.15, 10.16, False, allow_grace=True))
+
+  def test_stale_nonfinite_duplicate_reversed_or_large_jump_rejected(self):
+    for frame,eof,stamp in ((102,10.51,10.52),(120,10.1,10.11),(99,10.1,10.11),
+                            (102,9.9,10.1),(102,10.1,9.9),(102,float('nan'),10.1),
+                            (102,10.1,10.7),(102,10.1,10.09)):
+      self.setUp()
+      self.assertFalse(self.guard.update(False, frame, eof, stamp, False, allow_grace=True))
+    self.setUp()
+    self.assertTrue(self.guard.update(False, 104, 10.2, 10.21, False, allow_grace=True))
+    self.assertFalse(self.guard.update(False, 104, 10.2, 10.21, False, allow_grace=True))
+
+  def test_calibration_still_uses_original_single_skip_150ms_policy(self):
+    calibration = module.CalibrationOdometryValidity()
+    calibration.update(True, 100, 10., 10.01, trusted=True, now=10.02)
+    self.assertFalse(calibration.update(False, 104, 10.2, 10.21, trusted=True, now=10.22))
+    self.assertEqual(calibration.camera.MAX_GAP,.15)
+
+  def test_real_locationd_publication_checks_all_other_inputs(self):
+    import ast
+    from types import SimpleNamespace as NS
+    from unittest.mock import MagicMock
+    source=Path(__file__).resolve().parents[1]/'locationd.py'
+    tree=ast.parse(source.read_text(encoding='utf8'))
+    main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+    loop=next(n for n in main.body if isinstance(n,ast.While))
+    block=next(n for n in loop.body if isinstance(n,ast.If) and
+               ast.unparse(n.test)=="sm.updated['cameraOdometry']")
+    class SM(dict):
+      valid={'cameraOdometry':False,'carState':True,'extrinsicsCalibration':True}
+      updated={'cameraOdometry':True}
+      logMonoTime={'cameraOdometry':int(10.21e9)}
+    sm=SM(cameraOdometry=NS(frameId=104,timestampEof=int(10.2e9)))
+    services=['accelerometer','gyroscope','cameraOdometry']
+    env=dict(sm=sm,critical_services=services,observation_input_invalid=dict.fromkeys(services,0),
+             input_invalid_threshold=dict.fromkeys(services,1.5),camera_validity=self.guard,
+             filter_initialized=True,camera_accepted=False,acc_msgs=[],gyro_msgs=[],sensor_valid={},
+             sensor_recv_time={},sensor_alive={},SIMULATION=False,sensor_all_checks=lambda *a:True,
+             estimator=MagicMock(),cloudlog=MagicMock(),pm=MagicMock())
+    code=compile(ast.Module(body=[block],type_ignores=[]),'actual_locationd_publication','exec')
+    exec(code,env)
+    self.assertEqual(env['estimator'].get_msg.call_args.args,(True,True,True))
+    for bad in ('sensor','other','counter','uninitialized'):
+      self.setUp();env['camera_validity']=self.guard
+      env['filter_initialized']=bad!='uninitialized'
+      env['sensor_all_checks']=lambda *a, ok=bad!='sensor':ok
+      sm.valid['carState']=bad!='other'
+      env['observation_input_invalid']['gyroscope']=2 if bad=='counter' else 0
+      exec(code,env)
+      self.assertFalse(env['estimator'].get_msg.call_args.args[1],bad)
