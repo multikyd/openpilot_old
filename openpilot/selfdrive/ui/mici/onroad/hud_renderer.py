@@ -7,7 +7,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.mici.onroad.lead_brake_panel import LeadBrakePanel
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
-from openpilot.selfdrive.ui.mici.onroad.hud_layout import (LEFT_CENTER, HEADER_TOP, NAV_STATUS_WIDTH, left_car_box,
+from openpilot.selfdrive.ui.mici.onroad.hud_layout import (LEFT_CENTER, HEADER_TOP, left_car_box,
                                                         lower_notice_box, gap_bar_boxes, select_road_notice)
 from openpilot.selfdrive.ui.mici.onroad.signal_renderer import draw_signal_panel, draw_overtake_advice
 from openpilot.selfdrive.ui.mici.onroad.bookmark_transfer import BookmarkTransferBanner
@@ -273,16 +273,21 @@ class HudRenderer(Widget):
              0 <= time.monotonic()-sm.recv_time['carrotMan'] < 1)
     connected = fresh and getattr(sm['carrotMan'], 'naviConnected', False)
     highway = connected and sm['carrotMan'].naviHighway
-    text = "Highway" if highway else "NAVI"
-    badge_width = NAV_STATUS_WIDTH
-    size = 32
-    measured = measure_text_cached(self._font_bold, text, size)
-    size *= min(1., (badge_width - 8) / max(1., measured.x))
-    width = measure_text_cached(self._font_bold, text, size).x
-    center = rect.x + rect.width / 2
-    rl.draw_rectangle_rounded(rl.Rectangle(center-badge_width/2, rect.y+HEADER_TOP, badge_width, 40), .2, 8, rl.Color(0, 0, 0, 190))
-    color = rl.Color(100, 235, 150, 255) if connected else rl.Color(135, 145, 155, 255)
-    rl.draw_text_ex(self._font_bold, text, rl.Vector2(center-width/2, rect.y+7), size, 0, color)
+    badges = [("NAV", 48, connected)]
+    if highway:
+      badges.append(("HWay", 64, True))
+    gap = 4
+    total_width = sum(width for _, width, _ in badges) + gap * (len(badges)-1)
+    x = rect.x + (rect.width-total_width)/2
+    for text, badge_width, active in badges:
+      size = 24
+      measured = measure_text_cached(self._font_bold, text, size)
+      size *= min(1., (badge_width-6)/max(1., measured.x))
+      width = measure_text_cached(self._font_bold, text, size).x
+      rl.draw_rectangle_rounded(rl.Rectangle(x, rect.y+HEADER_TOP, badge_width, 40), .2, 8, rl.Color(0, 0, 0, 190))
+      color = rl.Color(100, 235, 150, 255) if active else rl.Color(135, 145, 155, 255)
+      rl.draw_text_ex(self._font_bold, text, rl.Vector2(x+(badge_width-width)/2, rect.y+11), size, 0, color)
+      x += badge_width + gap
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     loading = ui_state.chestnut_state == ChestnutState.LOADING
