@@ -167,7 +167,8 @@ class TestLocationCameraOdometryValidity(unittest.TestCase):
              input_invalid_threshold=dict.fromkeys(services,1.5),camera_validity=self.guard,
              filter_initialized=True,camera_accepted=False,acc_msgs=[],gyro_msgs=[],sensor_valid={},
              sensor_recv_time={},sensor_alive={},SIMULATION=False,sensor_all_checks=lambda *a:True,
-             estimator=MagicMock(),cloudlog=MagicMock(),pm=MagicMock())
+             estimator=MagicMock(),cloudlog=MagicMock(),pm=MagicMock(),
+             last_input_health=None,time=NS(monotonic=lambda:10.22))
     code=compile(ast.Module(body=[block],type_ignores=[]),'actual_locationd_publication','exec')
     exec(code,env)
     self.assertEqual(env['estimator'].get_msg.call_args.args,(True,True,True))

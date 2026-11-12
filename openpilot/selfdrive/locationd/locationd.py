@@ -279,6 +279,7 @@ def main():
   estimator = LocationEstimator(DEBUG)
 
   filter_initialized = False
+  last_input_health = None
   camera_validity = LocationCameraOdometryValidity()
   critical_services = ["accelerometer", "gyroscope", "cameraOdometry"]
   observation_input_invalid = defaultdict(int)
@@ -347,6 +348,17 @@ def main():
         cloudlog.event("locationd_camera_grace", active=camera_validity.holding,
                        frame_id=int(camera.frameId), max_gap_s=camera_validity.MAX_GAP)
       inputs_valid = other_inputs_valid and camera_valid and critical_service_inputs_valid
+      health = (inputs_valid, sensors_valid, camera_valid, other_inputs_valid, critical_service_inputs_valid)
+      if health != last_input_health:
+        if last_input_health is not None or not all(health):
+          cloudlog.event('locationd_input_health', inputs_valid=inputs_valid, sensors_valid=sensors_valid,
+                         camera_valid=camera_valid, other_inputs_valid=other_inputs_valid,
+                         critical_inputs_valid=critical_service_inputs_valid,
+                         invalid_services=[s for s, valid in sm.valid.items() if not valid],
+                         invalid_observations={s:float(observation_input_invalid[s]) for s in critical_services},
+                         camera_frame=int(camera.frameId),
+                         camera_age_ms=round((time.monotonic()-camera.timestampEof*1e-9)*1000., 1))
+        last_input_health = health
 
       msg = estimator.get_msg(sensors_valid, inputs_valid, filter_initialized)
       pm.send("deviceMotion", msg)

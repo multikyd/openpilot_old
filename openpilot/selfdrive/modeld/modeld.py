@@ -39,6 +39,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, 
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_driving_model_data, fill_pose_msg, PublishState
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
+from openpilot.selfdrive.modeld.pipeline_timing import PipelineTiming
 from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_present, chestnut_compiled, modeld_pkl_path, load_oob, wait_for_chestnut
 
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
@@ -47,6 +48,13 @@ LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 BIG_MODEL_TIMEOUT = 60
+
+
+def publish_camera_odometry(pm, output, meta, dropped, calibrated):
+  # Pose is independent of action smoothing, HUD data and desire bookkeeping.
+  msg = messaging.new_message('cameraOdometry')
+  fill_pose_msg(msg, output, meta.frame_id, dropped, meta.timestamp_eof, calibrated)
+  pm.send('cameraOdometry', msg)
 
 def get_lat_smooth_seconds_dynamic(model_output: dict[str, np.ndarray],
                                    base_lat_smooth_seconds: float) -> tuple[float, float, float]:
@@ -356,7 +364,9 @@ def main(demo=False):
   lat_smooth_seconds = LAT_SMOOTH_SECONDS
   vEgoStopping = params.get("VEgoStopping")
   camera_yaw_trim_deg = params.get("CameraYawTrimDeg")
+  pipeline_timing = PipelineTiming()
   while True:
+    receive_start = time.monotonic()
     if time.monotonic() - last_time >= 2:
       last_time = time.monotonic()
       custom_lat_delay = params.get("SteerActuatorDelay")
@@ -397,6 +407,7 @@ def main(demo=False):
       buf_extra = buf_main
       meta_extra = meta_main
 
+    frame_received = time.monotonic()
     sm.update(0)
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
@@ -453,6 +464,7 @@ def main(demo=False):
       'action_t': np.array([lat_action_t, long_action_t], dtype=np.float32),
     }
 
+    preprocess_end = time.monotonic()
     mt1 = time.perf_counter()
     try:
       send_chestnut = (chestnut_state is not None and
@@ -473,9 +485,13 @@ def main(demo=False):
     model_execution_time = mt2 - mt1
 
     if model_output is not None:
+      publish_camera_odometry(pm, model_output, meta_main, vipc_dropped_frames, extrinsics_calibration_seen)
+      timing = pipeline_timing.update(time.monotonic(), meta_main.timestamp_eof*1e-9,
+                                      frame_received-receive_start, preprocess_end-frame_received, model_execution_time)
+      if timing is not None:
+        cloudlog.event('model_pipeline_delay', frame_id=int(meta_main.frame_id), dropped_frames=vipc_dropped_frames, **timing)
       modelv2_send = messaging.new_message('modelV2')
       drivingdata_send = messaging.new_message('drivingModelData')
-      posenet_send = messaging.new_message('cameraOdometry')
 
       lat_smooth_seconds_dynamic, y_std_1s, lat_smooth_extra = get_lat_smooth_seconds_dynamic(
           model_output,
@@ -510,10 +526,8 @@ def main(demo=False):
       modelv2_send.modelV2.meta.modelTurnSpeed = float(DH.model_turn_speed)
 
       fill_driving_model_data(drivingdata_send, modelv2_send)
-      fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, extrinsics_calibration_seen)
       pm.send('modelV2', modelv2_send)
       pm.send('drivingModelData', drivingdata_send)
-      pm.send('cameraOdometry', posenet_send)
     last_vipc_frame_id = meta_main.frame_id
 
 if __name__ == "__main__":
