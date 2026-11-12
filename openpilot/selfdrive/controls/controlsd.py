@@ -15,6 +15,7 @@ from openpilot.common.swaglog import cloudlog
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature
+from openpilot.selfdrive.controls.lib.close_lead_mode import CloseLeadModelMode
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.model_lane_guard import ModelLaneGuard, LanePositionGuard
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
@@ -93,6 +94,7 @@ class Controls:
       self.LaC = LatControlTorque(self.CP, self.CI, DT_CTRL)
     self.standstill_elapsed_timer = 0.0
 
+    self.close_lead_mode = CloseLeadModelMode()
     self.lanefull_timer = 0
 
     self.timer = 0
@@ -201,7 +203,14 @@ class Controls:
     lat_plan = self.sm['lateralPlan']
     #self.lanefull_mode_enabled = (lat_plan.useLaneLines and abs(self.sm['carrotMan'].vTurnSpeed) > self.use_lane_line_curve_speed)
     v_turn = abs(self.sm['carrotMan'].vTurnSpeed)
-    if lat_plan.useLaneLines:
+    mode_now = time.monotonic()
+    close_lead_model = self.close_lead_mode.update(
+      mode_now, CS.vEgo, self.sm['radarState'].leadOne, model_v2.laneLineProbs,
+      fresh=(self.sm.all_checks(['carState', 'radarState', 'modelV2']) and
+             all(0. <= mode_now-self.sm.logMonoTime[name]*1e-9 <= .2
+                 for name in ('carState', 'radarState', 'modelV2'))),
+      enabled=(CC.latActive and model_v2.meta.laneChangeState == LaneChangeState.off))
+    if lat_plan.useLaneLines and not close_lead_model:
       buffer = 5.0  # 속도 버퍼 (±5.0)
       HOLD_FRAMES = 50  # 약 0.5초 유지 (100Hz 기준: 50프레임)
 
@@ -422,6 +431,8 @@ class Controls:
     cs.debugMsg1 = str(CO.actuatorsOutput.kisaLog1)
     if abs(self.lane_position_guard.accel) > 1e-4:
       cs.debugMsg1 += f" LPG={self.lane_position_guard.accel:+.2f}"
+    if self.close_lead_mode.active:
+      cs.debugMsg1 += " LCF=model"
     if abs(self.model_lane_guard.accel) > 1e-4:
       cs.debugMsg1 += f" MLG={self.model_lane_guard.side:+d}:{self.model_lane_guard.accel:+.2f}"
     #cs.debugMsg2 = str(CO.actuatorsOutput.kisaLog2)
